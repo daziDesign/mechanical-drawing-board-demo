@@ -168,3 +168,54 @@ test('触控输入能绘制直线', async ({ browser }) => {
   await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(1);
   await context.close();
 });
+
+test('可直接输入线段、圆、圆弧和平行线的精确坐标与尺寸', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建空白画板' }).click();
+  await page.getByRole('button', { name: '直线' }).click();
+  await page.getByLabel('起点 X').fill('0');
+  await page.getByLabel('起点 Y').fill('0');
+  await page.getByLabel('线段长度').fill('80');
+  await page.getByLabel('方向角（°，0 为向右）').fill('0');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+
+  await page.getByRole('button', { name: '圆', exact: true }).click();
+  await page.getByLabel('圆心 X').fill('30');
+  await page.getByLabel('圆心 Y').fill('35');
+  await page.getByLabel('半径 R').fill('12.5');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+
+  await page.getByRole('button', { name: '圆弧', exact: true }).click();
+  await page.getByLabel('圆心 X').fill('30');
+  await page.getByLabel('圆心 Y').fill('20');
+  await page.getByLabel('半径 R').fill('20');
+  await page.getByLabel('起始角（°）').fill('180');
+  await page.getByLabel('终止角（°）').fill('270');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+
+  await page.getByRole('button', { name: '辅助平行线' }).click();
+  const box = await page.locator('svg.drawing-canvas').boundingBox();
+  if (!box) throw new Error('画布未显示');
+  await page.locator('svg.drawing-canvas').click({ position: { x: box.width / 2 + 40 * 6, y: box.height / 2 } });
+  await page.getByLabel('平行距离').fill('17.5');
+  await page.getByRole('button', { name: '左侧' }).click();
+  await page.getByRole('button', { name: '生成平行线' }).click();
+  await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(4);
+
+  await page.getByRole('button', { name: '文件菜单' }).click();
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('button', { name: '保存项目 JSON' }).click();
+  const path = await (await downloaded).path();
+  if (!path) throw new Error('JSON 下载路径缺失');
+  const project = JSON.parse(readFileSync(path, 'utf8'));
+  const line = project.shapes[0].geometry;
+  const circle = project.shapes[1].geometry;
+  const arc = project.shapes[2].geometry;
+  const parallel = project.shapes[3].geometry;
+  expect(line.b.x).toBeCloseTo(80, 8);
+  expect(circle.center).toEqual({ x: 30, y: 35 });
+  expect(circle.radius).toBe(12.5);
+  expect(arc.center).toEqual({ x: 30, y: 20 });
+  expect(arc.radius).toBe(20);
+  expect(parallel.a.y).toBeCloseTo(17.5, 8);
+});

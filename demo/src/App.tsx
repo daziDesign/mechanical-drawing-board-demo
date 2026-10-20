@@ -68,6 +68,12 @@ export function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [offsetId, setOffsetId] = useState<string | null>(null);
   const [numeric, setNumeric] = useState('');
+  const [exactX, setExactX] = useState('0');
+  const [exactY, setExactY] = useState('0');
+  const [exactAngle, setExactAngle] = useState('0');
+  const [exactStart, setExactStart] = useState('180');
+  const [exactEnd, setExactEnd] = useState('270');
+  const [offsetSide, setOffsetSide] = useState<'left' | 'right'>('left');
   const [clockwise, setClockwise] = useState(false);
   const [panel, setPanel] = useState(false);
   const [fileMenu, setFileMenu] = useState(false);
@@ -166,6 +172,45 @@ export function App() {
   const changeTool = (next: Tool) => {
     setTool(next); setDraft([]); setOffsetId(null); setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
   };
+  const exactValue = (value: string, label: string, positive = false): number | null => {
+    const n = Number(value);
+    if (value.trim() === '' || !Number.isFinite(n) || Math.abs(n) > 100000 || (positive && n <= 0)) {
+      message('请输入有效的' + label + '。'); return null;
+    }
+    return n;
+  };
+  const makeExact = () => {
+    if (!editing) return;
+    const amount = exactValue(numeric, tool === 'offset' ? '偏移距离' : tool === 'line' ? '长度' : '半径', true);
+    if (amount === null) return;
+    if (tool === 'offset') {
+      const source = visibleShapes.find(s => s.id === offsetId);
+      if (!source || source.geometry.kind !== 'line') { message('先在画布中选择要偏移的直线。'); return; }
+      const { a, b } = source.geometry;
+      const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+      const sidePoint = offsetSide === 'left' ? { x: mid.x - (b.y - a.y), y: mid.y + (b.x - a.x) } : { x: mid.x + (b.y - a.y), y: mid.y - (b.x - a.x) };
+      const line = offsetLine(source.geometry, amount, sidePoint);
+      if (!line) { message('无法偏移零长度直线。'); return; }
+      commit(line, '平行偏移 ' + amount + ' mm', 'construction', 'thin-solid'); setOffsetId(null); return;
+    }
+    const x = exactValue(exactX, 'X 坐标'); const y = exactValue(exactY, 'Y 坐标');
+    if (x === null || y === null) return;
+    const origin = { x, y };
+    if (tool === 'line') {
+      const degrees = exactValue(exactAngle, '方向角'); if (degrees === null) return;
+      const end = polar(origin, amount, degrees * Math.PI / 180);
+      commit({ kind: 'line', a: origin, b: end }, '精确直线 ' + amount + ' mm');
+    } else if (tool === 'circle') commit({ kind: 'circle', center: origin, radius: amount }, '精确圆 R' + amount);
+    else if (tool === 'arc-center') {
+      const start = exactValue(exactStart, '起始角'); const end = exactValue(exactEnd, '终止角');
+      if (start === null || end === null) return;
+      const a = start * Math.PI / 180; const b = end * Math.PI / 180;
+      const sweep = clockwise ? -positiveAngle(a - b) : positiveAngle(b - a);
+      if (sweep < 0.005 && sweep > -0.005) { message('起始角和终止角不能相同。'); return; }
+      commit({ kind: 'arc', center: origin, radius: amount, startAngle: a, sweepAngle: sweep }, '精确圆弧 R' + amount);
+    }
+    setDraft([]);
+  };
   const commit = (geometry: Geometry, label: string, role: Shape['role'] = construction ? 'construction' : 'geometry', selectedStyle = styleId) => {
     setProject(current => addCommand(current, { type: 'create', shape: { id: freshId(), role, style: selectedStyle, geometry } }, label));
     setSelectedId(null);
@@ -193,7 +238,7 @@ export function App() {
       setOffsetId(null);
       return;
     }
-    if (draft.length === 0) { setDraft([point]); return; }
+    if (draft.length === 0) { setDraft([point]); setExactX(String(Number(point.x.toFixed(3)))); setExactY(String(Number(point.y.toFixed(3)))); return; }
     const first = draft[0];
     if (tool === 'line') {
       let end = point;
@@ -219,6 +264,7 @@ export function App() {
         const radius = numeric ? Number(numeric) : distance(first, point);
         if (!Number.isFinite(radius) || radius <= 0 || radius > 100000) { message('请输入有效半径。'); return; }
         setDraft([first, polar(first, radius, angleOf(first, point))]);
+        setExactStart(String(Number((angleOf(first, point) * 180 / Math.PI).toFixed(3))));
       } else {
         const start = angleOf(first, draft[1]);
         const end = angleOf(first, point);
@@ -416,6 +462,19 @@ export function App() {
           <button onClick={toggleGuides}>{state.showConstruction ? <Eye size={16}/> : <EyeSlash size={16}/>} 辅助线</button>
           <button onClick={() => setSnapOn(v => !v)}>捕捉 {snapOn ? '开' : '关'}</button>
         </div>
+        {editing && ['line', 'circle', 'arc-center', 'offset'].includes(tool) && <div className="precision-card" aria-label="精确作图">
+          <div className="precision-title"><strong>精确作图</strong><span>单位 mm</span></div>
+          {tool !== 'offset' && <div className="precision-grid">
+            <label>{tool === 'line' ? '起点 X' : '圆心 X'}<input type="number" step="any" value={exactX} onChange={event => setExactX(event.target.value)}/></label>
+            <label>{tool === 'line' ? '起点 Y' : '圆心 Y'}<input type="number" step="any" value={exactY} onChange={event => setExactY(event.target.value)}/></label>
+          </div>}
+          <label className="precision-wide">{tool === 'line' ? '线段长度' : tool === 'offset' ? '平行距离' : '半径 R'}<input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '输入毫米值'} value={numeric} onChange={event => setNumeric(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') makeExact(); }}/></label>
+          {tool === 'line' && <label className="precision-wide">方向角（°，0 为向右）<input type="number" step="any" value={exactAngle} onChange={event => setExactAngle(event.target.value)}/></label>}
+          {tool === 'arc-center' && <><div className="precision-grid"><label>起始角（°）<input type="number" step="any" value={exactStart} onChange={event => setExactStart(event.target.value)}/></label><label>终止角（°）<input type="number" step="any" value={exactEnd} onChange={event => setExactEnd(event.target.value)}/></label></div><div className="precision-segment"><button className={!clockwise ? 'active' : ''} onClick={() => setClockwise(false)}>逆时针</button><button className={clockwise ? 'active' : ''} onClick={() => setClockwise(true)}>顺时针</button></div></>}
+          {tool === 'offset' && <><p className="precision-help">{offsetId ? '已选直线。可指定方向后直接生成。' : '先在画布中点选一条直线。'}</p><div className="precision-segment"><button className={offsetSide === 'left' ? 'active' : ''} onClick={() => setOffsetSide('left')}>左侧</button><button className={offsetSide === 'right' ? 'active' : ''} onClick={() => setOffsetSide('right')}>右侧</button></div></>}
+          <button className="precision-submit" onClick={makeExact}>{tool === 'offset' ? '生成平行线' : '按数值绘制'}</button>
+          <p className="precision-help">也可在画布点选{tool === 'line' ? '起点与终点' : tool === 'offset' ? '目标一侧' : tool === 'circle' ? '圆心与半径点' : '圆心、起点与终点'}。</p>
+        </div>}
         <svg ref={svgRef} className={'drawing-canvas tool-' + tool} role="img" aria-label="机械制图画布"
           onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}
           onPointerLeave={() => { setPointer(null); setSnapLabel(''); }} onWheel={wheel} onContextMenu={event => event.preventDefault()}>

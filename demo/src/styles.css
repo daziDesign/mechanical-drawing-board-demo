@@ -58,6 +58,20 @@ button:focus-visible, input:focus-visible { outline: 3px solid #87b8ee; outline-
 .canvas-controls { position: absolute; z-index: 5; top: 17px; right: 18px; display: flex; gap: 5px; }
 .canvas-controls button { height: 35px; border: 1px solid #e1e8ef; border-radius: 6px; background: #fff; color: #607082; font-size: 12px; padding: 0 10px; display: inline-flex; align-items: center; gap: 4px; box-shadow: 0 2px 8px #182c3e0d; }
 .canvas-controls button:hover, .canvas-controls button.selected { border-color: #93c4f5; color: #2077d8; background: #f1f8ff; }
+.precision-card { position: absolute; z-index: 7; top: 66px; right: 18px; width: 254px; padding: 16px; border: 1px solid #dce6f0; border-radius: 10px; background: #fff; box-shadow: 0 10px 28px #1b34531b; }
+.precision-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 12px; }
+.precision-title strong { font-size: 15px; }
+.precision-title span, .precision-help { color: #7c8b9b; font-size: 11px; }
+.precision-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.precision-card label { display: block; color: #485a6b; font-size: 12px; font-weight: 600; }
+.precision-card input { display: block; width: 100%; height: 37px; margin: 6px 0 12px; padding: 0 9px; border: 1px solid #cbd9e7; border-radius: 6px; color: #192b3d; background: #fff; font-size: 14px; }
+.precision-card input:focus { border-color: #3384db; outline: 3px solid #dceeff; }
+.precision-segment { display: flex; margin-bottom: 12px; border: 1px solid #d5e1ec; border-radius: 6px; overflow: hidden; }
+.precision-segment button { flex: 1; height: 34px; border: 0; background: #fff; color: #607285; font-size: 12px; }
+.precision-segment button.active { background: #e9f3ff; color: #206fca; font-weight: 700; }
+.precision-submit { width: 100%; height: 39px; border: 0; border-radius: 6px; background: #287ee4; color: #fff; font-weight: 700; }
+.precision-submit:hover { background: #176ac9; }
+.precision-help { margin: 9px 0 0; line-height: 1.5; }
 .canvas-hint { position: absolute; bottom: 17px; left: 24px; z-index: 3; color: #8795a4; font-size: 12px; pointer-events: none; display: flex; align-items: center; gap: 8px; }
 .canvas-hint span { width: 17px; height: 17px; display: grid; place-items: center; border: 1px solid #aebdca; border-radius: 50%; font-size: 11px; font-weight: 600; }
 .coordinate { position: absolute; bottom: 18px; right: 25px; z-index: 3; color: #9ba6b2; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }
