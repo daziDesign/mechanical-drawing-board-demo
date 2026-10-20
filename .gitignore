@@ -1,0 +1,6 @@
+demo/node_modules/
+demo/dist/
+demo/test-results/
+demo/playwright-report/
+demo/.vite/
+工程制图课件/
