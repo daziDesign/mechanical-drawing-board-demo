@@ -56,6 +56,38 @@ export function nearestOnLine(p: Point, line: LineGeometry): Point {
   return add(line.a, mul(d, t));
 }
 
+/** A finite construction line through a point, perpendicular to the selected line. */
+export function perpendicularThrough(line: LineGeometry, point: Point): LineGeometry | null {
+  const direction = sub(line.b, line.a);
+  const length = Math.hypot(direction.x, direction.y);
+  if (length < EPS) return null;
+  const half = Math.max(20, length / 2);
+  const normal = { x: -direction.y / length * half, y: direction.x / length * half };
+  return { kind: 'line', a: sub(point, normal), b: add(point, normal) };
+}
+
+/** Exact contact points of tangents drawn from a point to a circle or arc. */
+export function tangentPointsFrom(point: Point, curve: CircleGeometry | ArcGeometry): Point[] {
+  const vector = sub(point, curve.center);
+  const d = Math.hypot(vector.x, vector.y);
+  if (d < curve.radius - EPS || d < EPS) return [];
+  const base = Math.atan2(vector.y, vector.x);
+  const spread = Math.acos(Math.max(-1, Math.min(1, curve.radius / d)));
+  const points = spread < EPS ? [polar(curve.center, curve.radius, base)] : [
+    polar(curve.center, curve.radius, base + spread),
+    polar(curve.center, curve.radius, base - spread),
+  ];
+  return curve.kind === 'arc' ? points.filter(p => arcContains(curve, p)) : points;
+}
+
+export function tangentLineFrom(point: Point, contact: Point, curve: CircleGeometry | ArcGeometry): LineGeometry {
+  if (distance(point, contact) > EPS) return { kind: 'line', a: point, b: contact };
+  const radius = sub(contact, curve.center);
+  const length = Math.hypot(radius.x, radius.y);
+  const normal = { x: -radius.y / length * 20, y: radius.x / length * 20 };
+  return { kind: 'line', a: sub(contact, normal), b: add(contact, normal) };
+}
+
 function lineLine(a: LineGeometry, b: LineGeometry): Point[] {
   const r = sub(a.b, a.a); const s = sub(b.b, b.a);
   const d = cross(r, s);
@@ -89,7 +121,7 @@ function circleCircle(a: CircleGeometry, b: CircleGeometry): Point[] {
 }
 
 export function intersections(a: Geometry, b: Geometry): Point[] {
-  if (a.kind === 'marker' || b.kind === 'marker' || a.kind === 'callout' || b.kind === 'callout' || a.kind === 'dimension' || b.kind === 'dimension') return [];
+  if (a.kind === 'marker' || b.kind === 'marker' || a.kind === 'callout' || b.kind === 'callout' || a.kind === 'dimension' || b.kind === 'dimension' || a.kind === 'ink' || b.kind === 'ink') return [];
   const aCircle: CircleGeometry | null = a.kind === 'arc' ? { kind: 'circle', center: a.center, radius: a.radius } : a.kind === 'circle' ? a : null;
   const bCircle: CircleGeometry | null = b.kind === 'arc' ? { kind: 'circle', center: b.center, radius: b.radius } : b.kind === 'circle' ? b : null;
   let points: Point[] = [];
@@ -101,6 +133,29 @@ export function intersections(a: Geometry, b: Geometry): Point[] {
 }
 
 export type SnapCandidate = { point: Point; label: string };
+export type RelationCandidate = SnapCandidate & { kind: 'intersection' | 'tangent' };
+export function relationCandidates(shapes: Shape[]): RelationCandidate[] {
+  const result: RelationCandidate[] = [];
+  for (let i = 0; i < shapes.length; i++) for (let j = i + 1; j < shapes.length; j++) {
+    const a = shapes[i].geometry; const b = shapes[j].geometry;
+    for (const point of intersections(a, b)) {
+      let tangent = false;
+      const line = a.kind === 'line' ? a : b.kind === 'line' ? b : null;
+      const curve = a.kind === 'circle' || a.kind === 'arc' ? a : b.kind === 'circle' || b.kind === 'arc' ? b : null;
+      if (line && curve) {
+        const direction = sub(line.b, line.a); const radius = sub(point, curve.center);
+        tangent = Math.abs(dot(direction, radius)) <= 1e-6 * Math.hypot(direction.x, direction.y) * curve.radius;
+      } else if ((a.kind === 'circle' || a.kind === 'arc') && (b.kind === 'circle' || b.kind === 'arc')) {
+        const ra = sub(point, a.center); const rb = sub(point, b.center);
+        tangent = Math.abs(cross(ra, rb)) <= 1e-6 * a.radius * b.radius;
+      }
+      const kind = tangent ? 'tangent' : 'intersection';
+      if (!result.some(candidate => distance(candidate.point, point) < 1e-6 && candidate.kind === kind))
+        result.push({ point, kind, label: tangent ? '切点' : '交点' });
+    }
+  }
+  return result;
+}
 export function snapCandidates(shapes: Shape[]): SnapCandidate[] {
   const result: SnapCandidate[] = [];
   for (const shape of shapes) {
@@ -115,9 +170,22 @@ export function snapCandidates(shapes: Shape[]): SnapCandidate[] {
       if (g.kind === 'arc') for (const p of arcEnds(g)) result.push({ point: p, label: '端点' });
     } else if (g.kind === 'marker') result.push({ point: g.point, label: g.label });
   }
-  for (let i = 0; i < shapes.length; i++) for (let j = i + 1; j < shapes.length; j++)
-    for (const p of intersections(shapes[i].geometry, shapes[j].geometry)) result.push({ point: p, label: '交点' });
+  result.push(...relationCandidates(shapes));
   return result;
+}
+
+/** Fixed points win near endpoints/midpoints; otherwise use any point on a finite segment. */
+export function nearestDrawingSnap(pointer: Point, candidates: SnapCandidate[], shapes: Shape[], scale: number, thresholdPx = 10): SnapCandidate | null {
+  const fixed = nearestSnap(pointer, candidates, scale, thresholdPx);
+  if (fixed) return fixed;
+  let best: SnapCandidate | null = null; let bestPx = thresholdPx;
+  for (const shape of shapes) {
+    if (shape.geometry.kind !== 'line') continue;
+    const point = nearestOnLine(pointer, shape.geometry);
+    const px = distance(pointer, point) * scale;
+    if (px < bestPx) { best = { point, label: '线上点' }; bestPx = px; }
+  }
+  return best;
 }
 
 export function nearestSnap(pointer: Point, candidates: SnapCandidate[], scale: number, thresholdPx = 10): SnapCandidate | null {

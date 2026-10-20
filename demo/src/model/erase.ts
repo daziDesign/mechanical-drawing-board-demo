@@ -1,5 +1,5 @@
 import { angleOf, distance, dot, positiveAngle, sub } from './geometry';
-import type { ArcGeometry, CircleGeometry, LineGeometry, Point } from './types';
+import type { ArcGeometry, CircleGeometry, InkGeometry, LineGeometry, Point } from './types';
 
 export type DrawableGeometry = LineGeometry | CircleGeometry | ArcGeometry;
 type Interval = [number, number];
@@ -68,4 +68,22 @@ export function eraseGeometry(geometry: DrawableGeometry, stroke: Point[], radiu
   }
   const keep = remaining(sweep, cuts);
   return keep?.map(([a, b]) => ({ kind: 'arc', center: geometry.center, radius: geometry.radius, startAngle: start + sign * a, sweepAngle: sign * (b - a) })) ?? null;
+}
+
+export function eraseInk(geometry: InkGeometry, stroke: Point[], radius: number): InkGeometry[] | null {
+  if (!stroke.length || !Number.isFinite(radius) || radius <= 0) return null;
+  const samples = densifyStroke(geometry.points, Math.max(0.1, radius / 3));
+  const groups: Point[][] = [];
+  let current: Point[] = [];
+  let removed = false;
+  for (const point of samples) {
+    const hit = stroke.some(eraser => distance(point, eraser) <= radius);
+    if (hit) {
+      removed = true;
+      if (current.length) { groups.push(current); current = []; }
+    } else current.push(point);
+  }
+  if (!removed) return null;
+  if (current.length) groups.push(current);
+  return groups.map(points => ({ ...geometry, points }));
 }

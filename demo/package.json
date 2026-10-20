@@ -6,11 +6,13 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build && node scripts/prepare-sites-build.mjs",
+    "build:offline": "vite build --base ./ --outDir dist/offline-build && node scripts/prepare-offline.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude tests/sites-worker.test.mjs --exclude tests/pages-build.test.mjs",
+    "test": "vitest run --exclude tests/sites-worker.test.mjs --exclude tests/pages-build.test.mjs --exclude tests/offline-build.test.mjs",
     "test:e2e": "playwright test",
     "test:pages": "node --test tests/pages-build.test.mjs",
+    "test:offline": "node --test tests/offline-build.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {

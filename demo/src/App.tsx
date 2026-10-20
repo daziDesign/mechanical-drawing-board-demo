@@ -3,28 +3,43 @@ import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent }
 import {
   ArrowClockwise, ArrowCounterClockwise, ArrowsOut, CaretDown, CaretLeft, CaretRight,
   Circle, Cursor, DownloadSimple, Eraser, Eye, EyeSlash, FloppyDisk, FolderOpen, Hand,
-  Minus, Pause, Play, Plus, Ruler, SlidersHorizontal, Trash, X,
+  Minus, Pause, PencilSimple, Play, Plus, Ruler, SlidersHorizontal, Trash, X,
 } from '@phosphor-icons/react';
 import { addCommand, blankProject, demoProject, materialize, moveCursor, parseProject } from './model/history';
-import { angleOf, arcContains, arcThroughThreePoints, distance, nearestOnLine, nearestSnap, offsetLine, polar, positiveAngle, snapCandidates } from './model/geometry';
-import { dimensionLayout, makeDimension } from './model/dimensions';
-import { densifyStroke, eraseGeometry } from './model/erase';
+import { angleOf, arcContains, arcThroughThreePoints, distance, nearestDrawingSnap, nearestOnLine, nearestSnap, offsetLine, perpendicularThrough, polar, positiveAngle, relationCandidates, snapCandidates, tangentLineFrom, tangentPointsFrom } from './model/geometry';
+import { dimensionLayout, makeAngularDimension, makeDimension } from './model/dimensions';
+import { densifyStroke, eraseGeometry, eraseInk } from './model/erase';
+import { axisTicks } from './model/axes';
+import { extendGeometry, nearestExtendTarget } from './model/extend';
+import type { ExtendTarget } from './model/extend';
 import { getLineStyle, lineStyles } from './model/lineStyles';
 import { arrowTriangle, generateSvg, screenStyle, shapeBounds, shapePath } from './model/renderSvg';
 import { downloadPng, downloadText, loadProject, saveProject } from './model/storage';
-import type { Geometry, LineStyleId, Point, Project, Shape } from './model/types';
+import type { Geometry, InkColor, LineStyleId, Point, Project, Shape } from './model/types';
 
-type Tool = 'select' | 'line' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'dimension' | 'eraser' | 'hand';
+type Tool = 'select' | 'line' | 'extend' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'perpendicular' | 'tangent' | 'point' | 'dimension' | 'ink' | 'eraser' | 'hand';
 type Camera = { x: number; y: number; scale: number };
 const iconTools = [
   { id: 'select', label: '选择', Icon: Cursor },
   { id: 'line', label: '直线', Icon: Minus },
+  { id: 'extend', label: '延长', Icon: ArrowsOut },
   { id: 'circle', label: '圆', Icon: Circle },
   { id: 'arc-center', label: '圆弧', Icon: ArrowClockwise },
+  { id: 'arc-three', label: '三点圆弧', Icon: ArrowClockwise },
   { id: 'offset', label: '辅助平行线', Icon: SlidersHorizontal },
+  { id: 'perpendicular', label: '垂线', Icon: Plus },
+  { id: 'tangent', label: '切线', Icon: ArrowClockwise },
+  { id: 'point', label: '交点／切点标注', Icon: Plus },
   { id: 'dimension', label: '尺寸标注', Icon: Ruler },
+  { id: 'ink', label: '标注画笔', Icon: PencilSimple },
   { id: 'eraser', label: '橡皮擦', Icon: Eraser },
   { id: 'hand', label: '平移', Icon: Hand },
+] as const;
+const toolGroups = [
+  { title: '基本工具', ids: ['select', 'hand', 'line', 'circle', 'arc-center', 'arc-three'] },
+  { title: '作图', ids: ['extend', 'offset', 'perpendicular', 'tangent'] },
+  { title: '标注', ids: ['point', 'dimension', 'ink'] },
+  { title: '编辑', ids: ['eraser'] },
 ] as const;
 const freshId = () => crypto.randomUUID();
 const sampleCamera = (width: number, height: number): Camera => {
@@ -43,6 +58,8 @@ const fitCamera = (shapes: Shape[], width: number, height: number): Camera => {
 };
 
 function hitShape(point: Point, shapes: Shape[], scale: number): Shape | null {
+  const marker = [...shapes].reverse().find(shape => shape.geometry.kind === 'marker' && distance(point, shape.geometry.point) * scale < 10);
+  if (marker) return marker;
   let best: Shape | null = null;
   let bestPx = 12;
   for (const shape of shapes) {
@@ -51,6 +68,7 @@ function hitShape(point: Point, shapes: Shape[], scale: number): Shape | null {
     if (g.kind === 'line') px = distance(point, nearestOnLine(point, g)) * scale;
     else if (g.kind === 'circle') px = Math.abs(distance(point, g.center) - g.radius) * scale;
     else if (g.kind === 'arc' && arcContains(g, point)) px = Math.abs(distance(point, g.center) - g.radius) * scale;
+    else if (g.kind === 'ink') px = g.points.length === 1 ? distance(point, g.points[0]) * scale : Math.min(...g.points.slice(1).map((p, index) => distance(point, nearestOnLine(point, { kind: 'line', a: g.points[index], b: p })) * scale));
     else if (g.kind === 'marker') px = distance(point, g.point) * scale;
     else if (g.kind === 'callout') px = distance(point, g.elbow) * scale;
     else if (g.kind === 'dimension') px = distance(point, dimensionLayout(g).label) * scale;
@@ -68,13 +86,24 @@ export function App() {
   const [construction, setConstruction] = useState(false);
   const [snapOn, setSnapOn] = useState(true);
   const [draft, setDraft] = useState<Point[]>([]);
+  const [continuousLine, setContinuousLine] = useState(false);
+  const [extendTarget, setExtendTarget] = useState<ExtendTarget | null>(null);
   const [pointer, setPointer] = useState<Point | null>(null);
   const [snapLabel, setSnapLabel] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [offsetId, setOffsetId] = useState<string | null>(null);
+  const [constructionSourceId, setConstructionSourceId] = useState<string | null>(null);
+  const [tangentOrigin, setTangentOrigin] = useState<Point | null>(null);
+  const [pointMode, setPointMode] = useState<'intersection' | 'tangent'>('intersection');
+  const [pointLabel, setPointLabel] = useState('');
   const [dimensionSourceId, setDimensionSourceId] = useState<string | null>(null);
+  const [angleSecondId, setAngleSecondId] = useState<string | null>(null);
   const [dimensionDiameter, setDimensionDiameter] = useState(false);
+  const [dimensionAngle, setDimensionAngle] = useState(false);
   const [erasePx, setErasePx] = useState(16);
+  const [inkColor, setInkColor] = useState<InkColor>('#d83b32');
+  const [inkWidth, setInkWidth] = useState<2 | 4 | 6>(4);
+  const [inkDraft, setInkDraft] = useState<Point[]>([]);
   const [numeric, setNumeric] = useState('');
   const [exactX, setExactX] = useState('0');
   const [exactY, setExactY] = useState('0');
@@ -99,11 +128,13 @@ export function App() {
   const saveVersion = useRef(0);
   const dragRef = useRef<{ x: number; y: number; camera: Camera } | null>(null);
   const eraseRef = useRef<Point[] | null>(null);
+  const inkRef = useRef<Point[] | null>(null);
   const cameraTouched = useRef(false);
   const editing = playback === null;
   const state = useMemo(() => editing ? { shapes: project.shapes, showConstruction: project.settings.showConstruction } : materialize(project.steps, playback), [editing, project, playback]);
   const visibleShapes = useMemo(() => state.shapes.filter(s => s.role !== 'construction' || state.showConstruction), [state]);
   const candidates = useMemo(() => snapCandidates(visibleShapes), [visibleShapes]);
+  const relations = useMemo(() => relationCandidates(visibleShapes), [visibleShapes]);
   const selected = state.shapes.find(s => s.id === selectedId);
 
   const message = useCallback((value: string) => {
@@ -160,6 +191,9 @@ export function App() {
     x: size.width / 2 + (p.x - camera.x) * camera.scale,
     y: size.height / 2 - (p.y - camera.y) * camera.scale,
   }), [camera, size]);
+  const axes = useMemo(() => axisTicks(camera.scale,
+    camera.x - size.width / (2 * camera.scale), camera.x + size.width / (2 * camera.scale),
+    camera.y - size.height / (2 * camera.scale), camera.y + size.height / (2 * camera.scale)), [camera, size]);
   const unmap = useCallback((clientX: number, clientY: number): Point => {
     const rect = svgRef.current!.getBoundingClientRect();
     return {
@@ -174,12 +208,14 @@ export function App() {
       next = Math.abs(point.x - first.x) > Math.abs(point.y - first.y)
         ? { x: point.x, y: first.y } : { x: first.x, y: point.y };
     }
-    const candidate = snapOn ? nearestSnap(next, candidates, camera.scale) : null;
+    const candidate = tool === 'point'
+      ? nearestSnap(next, relations.filter(item => item.kind === pointMode), camera.scale, 14)
+      : snapOn ? nearestDrawingSnap(next, candidates, visibleShapes, camera.scale) : null;
     setSnapLabel(candidate?.label ?? '');
     return candidate?.point ?? next;
   };
   const changeTool = (next: Tool) => {
-    setTool(next); setDraft([]); setOffsetId(null); setDimensionSourceId(null); eraseRef.current = null; setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
+    setTool(next); setDraft([]); setExtendTarget(null); setOffsetId(null); setConstructionSourceId(null); setTangentOrigin(null); setDimensionSourceId(null); setAngleSecondId(null); eraseRef.current = null; inkRef.current = null; setInkDraft([]); setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
   };
   const exactValue = (value: string, label: string, positive = false): number | null => {
     const n = Number(value);
@@ -209,6 +245,7 @@ export function App() {
       const degrees = exactValue(exactAngle, '方向角'); if (degrees === null) return;
       const end = polar(origin, amount, degrees * Math.PI / 180);
       commit({ kind: 'line', a: origin, b: end }, '精确直线 ' + amount + ' mm');
+      if (continuousLine) { setDraft([end]); setExactX(String(Number(end.x.toFixed(3)))); setExactY(String(Number(end.y.toFixed(3)))); setNumeric(''); }
     } else if (tool === 'circle') commit({ kind: 'circle', center: origin, radius: amount }, '精确圆 R' + amount);
     else if (tool === 'arc-center') {
       const start = exactValue(exactStart, '起始角'); const end = exactValue(exactEnd, '终止角');
@@ -218,7 +255,7 @@ export function App() {
       if (sweep < 0.005 && sweep > -0.005) { message('起始角和终止角不能相同。'); return; }
       commit({ kind: 'arc', center: origin, radius: amount, startAngle: a, sweepAngle: sweep }, '精确圆弧 R' + amount);
     }
-    setDraft([]);
+    if (tool !== 'line' || !continuousLine) setDraft([]);
   };
   const commit = (geometry: Geometry, label: string, role: Shape['role'] = construction ? 'construction' : 'geometry', selectedStyle = styleId) => {
     setProject(current => addCommand(current, { type: 'create', shape: { id: freshId(), role, style: selectedStyle, geometry } }, label));
@@ -232,7 +269,84 @@ export function App() {
     if (!editing) return;
     if (tool === 'select') { setSelectedId(hitShape(point, visibleShapes, camera.scale)?.id ?? null); return; }
     if (tool === 'hand') return;
+    if (tool === 'point') {
+      const candidate = nearestSnap(point, relations.filter(item => item.kind === pointMode), camera.scale, 14);
+      if (!candidate) { message(pointMode === 'tangent' ? '请点选已有直线与圆弧／圆的切点。' : '请点选两图元的交点。'); return; }
+      const prefix = pointMode === 'tangent' ? 'T' : 'P';
+      const count = visibleShapes.filter(shape => shape.geometry.kind === 'marker' && shape.geometry.label.startsWith(prefix)).length + 1;
+      const label = pointLabel.trim() || prefix + count;
+      commit({ kind: 'marker', point: candidate.point, label }, '标注' + (pointMode === 'tangent' ? '切点 ' : '交点 ') + label, 'annotation', 'thin-solid');
+      setPointLabel(''); return;
+    }
+    if (tool === 'perpendicular') {
+      if (!constructionSourceId) {
+        const source = hitShape(point, visibleShapes.filter(shape => shape.geometry.kind === 'line'), camera.scale);
+        if (!source) { message('请先点选一条基准直线。'); return; }
+        setConstructionSourceId(source.id); return;
+      }
+      const source = visibleShapes.find(shape => shape.id === constructionSourceId);
+      if (!source || source.geometry.kind !== 'line') { setConstructionSourceId(null); return; }
+      const line = perpendicularThrough(source.geometry, point);
+      if (!line) { message('无法为零长度线段作垂线。'); return; }
+      commit(line, '作经过指定点的垂线');
+      setConstructionSourceId(null); return;
+    }
+    if (tool === 'tangent') {
+      if (!constructionSourceId) {
+        const source = hitShape(point, visibleShapes.filter(shape => shape.geometry.kind === 'circle' || shape.geometry.kind === 'arc'), camera.scale);
+        if (!source) { message('请先点选圆或圆弧。'); return; }
+        setConstructionSourceId(source.id); return;
+      }
+      const source = visibleShapes.find(shape => shape.id === constructionSourceId);
+      if (!source || (source.geometry.kind !== 'circle' && source.geometry.kind !== 'arc')) { setConstructionSourceId(null); setTangentOrigin(null); return; }
+      if (!tangentOrigin) {
+        const contacts = tangentPointsFrom(point, source.geometry);
+        if (!contacts.length) { message('起点需在圆外或圆上，且圆弧上需有切点。'); return; }
+        setTangentOrigin(point);
+        if (contacts.length > 1) return;
+        commit(tangentLineFrom(point, contacts[0], source.geometry), '作切线');
+        setConstructionSourceId(null); setTangentOrigin(null); return;
+      }
+      const contacts = tangentPointsFrom(tangentOrigin, source.geometry);
+      if (!contacts.length) { setConstructionSourceId(null); setTangentOrigin(null); return; }
+      const contact = contacts.reduce((best, candidate) => distance(candidate, point) < distance(best, point) ? candidate : best, contacts[0]);
+      commit(tangentLineFrom(tangentOrigin, contact, source.geometry), '作切线');
+      setConstructionSourceId(null); setTangentOrigin(null); return;
+    }
+    if (tool === 'extend') {
+      if (!extendTarget) {
+        const target = nearestExtendTarget(point, visibleShapes, camera.scale);
+        if (!target) { message('请单击线段或圆弧的端点。'); return; }
+        setExtendTarget(target); return;
+      }
+      const source = visibleShapes.find(shape => shape.id === extendTarget.id);
+      if (!source || (source.geometry.kind !== 'line' && source.geometry.kind !== 'arc')) { setExtendTarget(null); return; }
+      const geometry = extendGeometry(source.geometry, extendTarget.end, point, 12, camera.scale);
+      if (!geometry) { message('请在线段或圆弧原有范围之外确定延长位置。'); return; }
+      setProject(current => addCommand(current, { type: 'replace', removeIds: [source.id], addShapes: [{ ...source, geometry }] }, '延长' + (source.geometry.kind === 'line' ? '线段' : '圆弧')));
+      setExtendTarget(null); setSelectedId(null); message('已延长图元；已有尺寸标注请重新标注。'); return;
+    }
     if (tool === 'dimension') {
+      if (dimensionAngle) {
+        if (!dimensionSourceId) {
+          const first = hitShape(point, visibleShapes.filter(shape => shape.geometry.kind === 'line'), camera.scale);
+          if (!first) { message('请先点选第一条直线。'); return; }
+          setDimensionSourceId(first.id); return;
+        }
+        if (!angleSecondId) {
+          const second = hitShape(point, visibleShapes.filter(shape => shape.geometry.kind === 'line' && shape.id !== dimensionSourceId), camera.scale);
+          const first = visibleShapes.find(shape => shape.id === dimensionSourceId);
+          if (!second || !first || first.geometry.kind !== 'line' || second.geometry.kind !== 'line') { message('请点选另一条直线。'); return; }
+          if (!makeAngularDimension(first.geometry, second.geometry, point)) { message('两条直线平行或重合，请重新选择。'); setDimensionSourceId(null); return; }
+          setAngleSecondId(second.id); return;
+        }
+        const first = visibleShapes.find(shape => shape.id === dimensionSourceId);
+        const second = visibleShapes.find(shape => shape.id === angleSecondId);
+        if (!first || !second || first.geometry.kind !== 'line' || second.geometry.kind !== 'line') { setDimensionSourceId(null); setAngleSecondId(null); return; }
+        const annotation = makeAngularDimension(first.geometry, second.geometry, point);
+        if (annotation) commit(annotation, '添加角度标注', 'annotation', 'thin-solid');
+        setDimensionSourceId(null); setAngleSecondId(null); return;
+      }
       if (!dimensionSourceId) {
         const hit = hitShape(point, visibleShapes.filter(s => ['line', 'circle', 'arc'].includes(s.geometry.kind)), camera.scale);
         if (!hit) { message('先点选要标注的线段、圆或圆弧。'); return; }
@@ -275,7 +389,8 @@ export function App() {
       }
       if (distance(first, end) < 1e-6) { message('起点与终点不能重合。'); return; }
       commit({ kind: 'line', a: first, b: end }, '绘制直线');
-      setDraft([]); setNumeric('');
+      setDraft(continuousLine ? [end] : []); setNumeric('');
+      if (continuousLine) { setExactX(String(Number(end.x.toFixed(3)))); setExactY(String(Number(end.y.toFixed(3)))); }
     } else if (tool === 'circle') {
       const radius = numeric ? Number(numeric) : distance(first, point);
       if (!Number.isFinite(radius) || radius <= 0 || radius > 100000) { message('请输入有效半径。'); return; }
@@ -311,8 +426,8 @@ export function App() {
     const removeIds: string[] = []; const addShapes: Shape[] = [];
     for (const shape of visibleShapes) {
       const geometry = shape.geometry;
-      if (geometry.kind !== 'line' && geometry.kind !== 'circle' && geometry.kind !== 'arc') continue;
-      const pieces = eraseGeometry(geometry, samples, radius);
+      if (geometry.kind !== 'line' && geometry.kind !== 'circle' && geometry.kind !== 'arc' && geometry.kind !== 'ink') continue;
+      const pieces = geometry.kind === 'ink' ? eraseInk(geometry, samples, radius) : eraseGeometry(geometry, samples, radius);
       if (pieces === null) continue;
       removeIds.push(shape.id);
       for (const piece of pieces) addShapes.push({ ...shape, id: freshId(), geometry: piece });
@@ -329,6 +444,11 @@ export function App() {
       event.currentTarget.setPointerCapture(event.pointerId); return;
     }
     if (!editing) return;
+    if (tool === 'ink') {
+      const point = unmap(event.clientX, event.clientY);
+      inkRef.current = [point]; setInkDraft([point]); setPointer(point); setSnapLabel('');
+      event.currentTarget.setPointerCapture(event.pointerId); return;
+    }
     if (tool === 'eraser') {
       const point = unmap(event.clientX, event.clientY);
       eraseRef.current = [point]; setPointer(point); setSnapLabel('');
@@ -343,6 +463,14 @@ export function App() {
       setCamera({ ...drag.camera, x: drag.camera.x - (event.clientX - drag.x) / drag.camera.scale, y: drag.camera.y + (event.clientY - drag.y) / drag.camera.scale });
       return;
     }
+    if (tool === 'ink') {
+      const point = unmap(event.clientX, event.clientY);
+      if (inkRef.current) {
+        const last = inkRef.current[inkRef.current.length - 1];
+        if (distance(last, point) * camera.scale >= 2) { inkRef.current.push(point); setInkDraft([...inkRef.current]); }
+      }
+      setPointer(point); return;
+    }
     if (tool === 'eraser') {
       const point = unmap(event.clientX, event.clientY);
       if (eraseRef.current) eraseRef.current.push(point);
@@ -351,6 +479,17 @@ export function App() {
     setPointer(snapped(unmap(event.clientX, event.clientY), event.shiftKey));
   };
   const pointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (inkRef.current) {
+      const points = inkRef.current;
+      inkRef.current = null; setInkDraft([]);
+      if (event.type !== 'pointercancel') {
+        const end = unmap(event.clientX, event.clientY);
+        if (distance(points[points.length - 1], end) * camera.scale >= 1) points.push(end);
+        commit({ kind: 'ink', points, color: inkColor, widthPx: inkWidth }, '添加标注笔迹', 'annotation', 'thin-solid');
+      }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (eraseRef.current) {
       const stroke = eraseRef.current;
       eraseRef.current = null;
@@ -393,7 +532,7 @@ export function App() {
     setProject(sample ? demoProject() : blankProject());
     cameraTouched.current = !sample;
     setCamera(sample ? sampleCamera(size.width, size.height) : { x: 0, y: 0, scale: 6 });
-    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setSelectedId(null); setDimensionSourceId(null); eraseRef.current = null;
+    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setExtendTarget(null); setConstructionSourceId(null); setTangentOrigin(null); setSelectedId(null); setDimensionSourceId(null); setAngleSecondId(null); eraseRef.current = null; inkRef.current = null; setInkDraft([]);
     message(sample ? '已载入可编辑的 R20 示例。' : '已创建空白画板。');
   };
   const exportFile = async (kind: 'json' | 'svg' | 'png') => {
@@ -416,7 +555,7 @@ export function App() {
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error('项目文件不能超过 10 MB。');
       const next = parseProject(await file.text());
-      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setSelectedId(null); setDimensionSourceId(null); eraseRef.current = null;
+      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setExtendTarget(null); setConstructionSourceId(null); setTangentOrigin(null); setSelectedId(null); setDimensionSourceId(null); setAngleSecondId(null); eraseRef.current = null; inkRef.current = null; setInkDraft([]);
       cameraTouched.current = false;
       setCamera(next.name === 'R20 两直线圆弧连接' ? sampleCamera(size.width, size.height) : fitCamera(next.shapes, size.width, size.height));
       message('项目已载入。');
@@ -427,7 +566,7 @@ export function App() {
       const typing = event.target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
       if (event.code === 'Space' && !typing) { event.preventDefault(); setSpace(true); }
       if (event.key === 'Escape') {
-        setDraft([]); setOffsetId(null); setDimensionSourceId(null); setFileMenu(false);
+        setDraft([]); setExtendTarget(null); setOffsetId(null); setConstructionSourceId(null); setTangentOrigin(null); setDimensionSourceId(null); setAngleSecondId(null); setFileMenu(false);
         if (playback !== null) { setPlayback(null); setPlaying(false); }
         else changeTool('select');
       }
@@ -470,13 +609,44 @@ export function App() {
     const line = offsetLine(source.geometry, Number(numeric || 20), pointer);
     return line ? shapePath({ id: 'offset-preview', role: 'construction', style: 'thin-solid', geometry: line }, map, 'screen') : null;
   }, [pointer, offsetId, visibleShapes, numeric, map]);
+  const extendPreview = useMemo(() => {
+    if (!pointer || !extendTarget || !editing) return null;
+    const source = visibleShapes.find(shape => shape.id === extendTarget.id);
+    if (!source || (source.geometry.kind !== 'line' && source.geometry.kind !== 'arc')) return null;
+    const geometry = extendGeometry(source.geometry, extendTarget.end, pointer, 12, camera.scale);
+    return geometry ? shapePath({ ...source, geometry }, map, 'screen') : null;
+  }, [pointer, extendTarget, editing, visibleShapes, camera.scale, map]);
+  const constructionPreview = useMemo(() => {
+    const source = visibleShapes.find(shape => shape.id === constructionSourceId);
+    if (!pointer || !source || !editing) return [];
+    if (tool === 'perpendicular' && source.geometry.kind === 'line') {
+      const line = perpendicularThrough(source.geometry, pointer);
+      return line ? [line] : [];
+    }
+    if (tool === 'tangent' && (source.geometry.kind === 'circle' || source.geometry.kind === 'arc')) {
+      const origin = tangentOrigin ?? pointer;
+      const curve = source.geometry;
+      return tangentPointsFrom(origin, curve).map(contact => tangentLineFrom(origin, contact, curve));
+    }
+    return [];
+  }, [pointer, constructionSourceId, tangentOrigin, visibleShapes, editing, tool]);
+  const tangentContacts = useMemo(() => {
+    const source = visibleShapes.find(shape => shape.id === constructionSourceId);
+    return tool === 'tangent' && tangentOrigin && source && (source.geometry.kind === 'circle' || source.geometry.kind === 'arc')
+      ? tangentPointsFrom(tangentOrigin, source.geometry) : [];
+  }, [tool, tangentOrigin, constructionSourceId, visibleShapes]);
   const hint = tool === 'line' ? (draft.length ? '单击终点；可输入精确长度，Shift 约束水平或垂直。' : '单击起点，再单击终点。')
+    : tool === 'extend' ? (extendTarget ? '移动指针预览，再单击确定延长位置；Esc 取消。' : '单击线段或圆弧的端点。')
     : tool === 'circle' ? (draft.length ? '单击确定半径，或在参数中输入精确半径。' : '单击圆心。')
     : tool === 'arc-center' ? ['单击圆心。', '单击起点，可输入半径。', '单击终点完成圆弧。'][Math.min(draft.length, 2)]
     : tool === 'arc-three' ? ['单击圆弧起点。', '单击经过点。', '单击圆弧终点。'][Math.min(draft.length, 2)]
     : tool === 'offset' ? (offsetId ? '单击目标一侧，生成平行辅助线。' : '单击要偏移的直线。')
-    : tool === 'dimension' ? (dimensionSourceId ? '点击标注文字的放置位置。' : '点击要标注的线段、圆或圆弧。')
-    : tool === 'eraser' ? '在多余线条上点击或拖动，局部擦除；可撤销。'
+    : tool === 'perpendicular' ? (constructionSourceId ? '点击垂线要经过的位置；Esc 取消。' : '先点击一条基准直线。')
+    : tool === 'tangent' ? (!constructionSourceId ? '先点击圆或圆弧。' : tangentOrigin ? '点击其中一个切点，确定切线。' : '点击圆外一点；圆上点可直接作切线。')
+    : tool === 'point' ? (pointMode === 'tangent' ? '点击已有图元的切点，放置切点标记。' : '点击两图元的交点，放置交点标记。')
+    : tool === 'dimension' ? (dimensionAngle ? !dimensionSourceId ? '点击第一条直线。' : !angleSecondId ? '点击第二条直线。' : '点击要标注的夹角位置。' : dimensionSourceId ? '点击标注文字的放置位置。' : '点击要标注的线段、圆或圆弧。')
+    : tool === 'ink' ? '按住并移动指针书写；每次落笔保存为一步。'
+    : tool === 'eraser' ? '在线条或笔迹上点击或拖动，局部擦除；可撤销。'
     : tool === 'hand' ? '拖动画布，滚轮缩放。' : '选择图元后可修改线型或删除。';
 
   return <div className="app-shell">
@@ -505,9 +675,15 @@ export function App() {
     </header>
     <div className="main-row">
       <aside className="tool-rail" aria-label="绘图工具">
-        {iconTools.map(({ id, label, Icon }) => <button key={id} className={'tool-button ' + (tool === id ? 'active' : '')} aria-label={label} title={label} disabled={!editing} onClick={() => changeTool(id)}><Icon size={31}/><span>{label}</span></button>)}
-        <div className="rail-spacer"/>
-        <button className="tool-button" aria-label="删除所选图元" disabled={!editing || !selectedId} onClick={removeSelected}><Trash size={24}/><span>删除</span></button>
+        <div className="tool-rail-head"><strong>绘图工具</strong><span>按用途选择</span></div>
+        {toolGroups.map(group => <section className="tool-group" key={group.title} aria-label={group.title}>
+          <h2>{group.title}</h2>
+          <div className="tool-grid">{group.ids.map(id => {
+            const item = iconTools.find(entry => entry.id === id)!;
+            const Icon = item.Icon;
+            return <button key={id} className={'tool-button ' + (tool === id ? 'active' : '')} aria-label={item.label} title={item.label} disabled={!editing} onClick={() => changeTool(id)}><Icon size={23}/><span>{item.label}</span></button>;
+          })}{group.title === '编辑' && <button className="tool-button" aria-label="删除所选图元" disabled={!editing || !selectedId} onClick={removeSelected}><Trash size={23}/><span>删除</span></button>}</div>
+        </section>)}
       </aside>
       <main className="canvas-area">
         <div className="style-strip"><div className="style-head"><strong>线型</strong><small>选择后用于新图元</small></div>
@@ -519,6 +695,7 @@ export function App() {
           <button className={construction ? 'selected' : ''} onClick={() => setConstruction(v => !v)}>辅助作图 {construction ? '开' : '关'}</button>
           <button onClick={toggleGuides}>{state.showConstruction ? <Eye size={16}/> : <EyeSlash size={16}/>} 辅助线</button>
           <button onClick={() => setSnapOn(v => !v)}>捕捉 {snapOn ? '开' : '关'}</button>
+          <button className={project.settings.showAxes ? 'selected' : ''} aria-pressed={project.settings.showAxes} onClick={() => setProject(current => ({ ...current, settings: { ...current.settings, showAxes: !current.settings.showAxes } }))}>坐标轴 {project.settings.showAxes ? '开' : '关'}</button>
         </div>
         {editing && ['line', 'circle', 'arc-center', 'offset'].includes(tool) && <div className="precision-card" aria-label="精确作图" onKeyDown={event => { if (event.key === 'Enter' && event.target instanceof HTMLInputElement) { event.preventDefault(); makeExact(); } }}>
           <div className="precision-title"><strong>精确作图</strong><span>单位 mm</span></div>
@@ -528,26 +705,51 @@ export function App() {
           </div>}
           <label className="precision-wide">{tool === 'line' ? '线段长度' : tool === 'offset' ? '平行距离' : '半径 R'}<input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '输入毫米值'} value={numeric} onChange={event => setNumeric(event.target.value)}/></label>
           {tool === 'line' && <label className="precision-wide">方向角（°，0 为向右）<input type="number" step="any" value={exactAngle} onChange={event => setExactAngle(event.target.value)}/></label>}
+          {tool === 'line' && <button className={'mode-toggle ' + (continuousLine ? 'active' : '')} aria-pressed={continuousLine} onClick={() => setContinuousLine(value => !value)}>连续画线 {continuousLine ? '开' : '关'}</button>}
           {tool === 'arc-center' && <><div className="precision-grid"><label>起始角（°）<input type="number" step="any" value={exactStart} onChange={event => setExactStart(event.target.value)}/></label><label>终止角（°）<input type="number" step="any" value={exactEnd} onChange={event => setExactEnd(event.target.value)}/></label></div><div className="precision-segment"><button className={!clockwise ? 'active' : ''} onClick={() => setClockwise(false)}>逆时针</button><button className={clockwise ? 'active' : ''} onClick={() => setClockwise(true)}>顺时针</button></div></>}
           {tool === 'offset' && <><p className="precision-help">{offsetId ? '已选直线。可指定方向后直接生成。' : '先在画布中点选一条直线。'}</p><div className="precision-segment"><button className={offsetSide === 'left' ? 'active' : ''} onClick={() => setOffsetSide('left')}>左侧</button><button className={offsetSide === 'right' ? 'active' : ''} onClick={() => setOffsetSide('right')}>右侧</button></div></>}
           <button className="precision-submit" onClick={makeExact}>{tool === 'offset' ? '生成平行线' : '按数值绘制'}</button>
           <p className="precision-help">也可在画布点选{tool === 'line' ? '起点与终点' : tool === 'offset' ? '目标一侧' : tool === 'circle' ? '圆心与半径点' : '圆心、起点与终点'}。</p>
         </div>}
-        {editing && tool === 'dimension' && <div className="precision-card dimension-card" aria-label="尺寸标注设置"><div className="precision-title"><strong>尺寸标注</strong><span>单位 mm</span></div><p className="precision-help">{dimensionSourceId ? '已选图元，再点击画布放置标注。' : '先点击一条线段、圆或圆弧。'}</p><div className="precision-segment"><button className={!dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(false)}>长度 / 半径</button><button className={dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(true)}>圆标直径</button></div><p className="precision-help">标注按图元几何计算；线段显示实际长度，圆和圆弧显示半径。</p></div>}
+        {editing && tool === 'dimension' && <div className="precision-card dimension-card" aria-label="尺寸标注设置"><div className="precision-title"><strong>尺寸标注</strong><span>{dimensionAngle ? '单位 °' : '单位 mm'}</span></div><p className="precision-help">{dimensionAngle ? !dimensionSourceId ? '先点击第一条直线。' : !angleSecondId ? '再点击第二条直线。' : '最后点击要标注的夹角位置。' : dimensionSourceId ? '已选图元，再点击画布放置标注。' : '先点击一条线段、圆或圆弧。'}</p><div className="precision-segment"><button className={!dimensionDiameter && !dimensionAngle ? 'active' : ''} onClick={() => { setDimensionDiameter(false); setDimensionAngle(false); setDimensionSourceId(null); setAngleSecondId(null); }}>长度 / 半径</button><button className={dimensionDiameter && !dimensionAngle ? 'active' : ''} onClick={() => { setDimensionDiameter(true); setDimensionAngle(false); setDimensionSourceId(null); setAngleSecondId(null); }}>圆标直径</button><button className={dimensionAngle ? 'active' : ''} onClick={() => { setDimensionDiameter(false); setDimensionAngle(true); setDimensionSourceId(null); setAngleSecondId(null); }}>角度</button></div><p className="precision-help">{dimensionAngle ? '依次选择两条直线；点击位置决定标注哪个夹角。' : '标注按图元几何计算；线段显示实际长度，圆和圆弧显示半径。'}</p></div>}
+        {editing && tool === 'point' && <div className="precision-card" aria-label="交点切点标注设置"><div className="precision-title"><strong>交点／切点标注</strong><span>精确吸附</span></div><div className="precision-segment"><button className={pointMode === 'intersection' ? 'active' : ''} onClick={() => setPointMode('intersection')}>交点</button><button className={pointMode === 'tangent' ? 'active' : ''} onClick={() => setPointMode('tangent')}>切点</button></div><label>标记名称<input maxLength={20} value={pointLabel} onChange={event => setPointLabel(event.target.value)} placeholder={pointMode === 'tangent' ? '留空自动编号 T1…' : '留空自动编号 P1…'}/></label><p className="precision-help">靠近已有图元的交点或切点时点击放置；可输入 O、T1 等名称。标记参与撤销、保存和导出。</p></div>}
+        {editing && (tool === 'perpendicular' || tool === 'tangent') && <div className="precision-card" aria-label="作图说明"><div className="precision-title"><strong>{tool === 'perpendicular' ? '垂线' : '切线'}</strong><span>精确作图</span></div><p className="precision-help">{tool === 'perpendicular' ? '先选择基准直线，再点击垂线经过的点；可捕捉线段上任意点。' : '先选择圆或圆弧，再点击圆外一点；若有两条解，点击需要的切点。'}需要辅助线时可开启顶部“辅助作图”。</p></div>}
+        {editing && tool === 'ink' && <div className="precision-card ink-card" aria-label="标注画笔设置"><div className="precision-title"><strong>标注画笔</strong><span>可回放</span></div><div className="ink-colors" aria-label="笔迹颜色">{([['#d83b32', '红色'], ['#287ee4', '蓝色'], ['#1c222b', '黑色']] as const).map(([color, name]) => <button key={color} aria-label={name} aria-pressed={inkColor === color} className={inkColor === color ? 'active' : ''} onClick={() => setInkColor(color)}><span style={{ background: color }}/>{name}</button>)}</div><div className="precision-segment">{([2, 4, 6] as const).map((width, index) => <button key={width} className={inkWidth === width ? 'active' : ''} onClick={() => setInkWidth(width)}>{['细', '中', '粗'][index]}</button>)}</div><p className="precision-help">笔迹随项目保存，可选择删除，也可用橡皮擦局部擦除。</p></div>}
         {editing && tool === 'eraser' && <div className="precision-card eraser-card" aria-label="橡皮擦设置"><div className="precision-title"><strong>局部橡皮擦</strong><span>屏幕像素</span></div><label>擦除半径：{erasePx} px<input type="range" min="8" max="48" step="2" value={erasePx} onChange={event => setErasePx(Number(event.target.value))}/></label><p className="precision-help">在线段、圆或圆弧上点击，或按住拖动。只擦除笔迹覆盖的部分，松开后作为一步记录。</p></div>}
         <svg ref={svgRef} className={'drawing-canvas tool-' + tool} role="img" aria-label="机械制图画布"
           onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}
           onPointerLeave={() => { setPointer(null); setSnapLabel(''); }} onWheel={wheel} onContextMenu={event => event.preventDefault()}>
           <rect width="100%" height="100%" fill="#fff"/>
+          {project.settings.showAxes && <g className="coordinate-axes" pointerEvents="none">
+            {map({ x: 0, y: 0 }).y >= 0 && map({ x: 0, y: 0 }).y <= size.height && <>
+              <path d={'M 0 ' + map({ x: 0, y: 0 }).y + ' H ' + size.width}/>
+              {axes.x.filter(x => x !== 0).map(x => <g key={'x' + x}><path d={'M ' + map({ x, y: 0 }).x + ' ' + (map({ x: 0, y: 0 }).y - 5) + ' v 10'}/><text x={map({ x, y: 0 }).x} y={map({ x: 0, y: 0 }).y + 20} textAnchor="middle">{x}</text></g>)}
+              <text x={size.width - 18} y={map({ x: 0, y: 0 }).y - 9}>X</text>
+            </>}
+            {map({ x: 0, y: 0 }).x >= 0 && map({ x: 0, y: 0 }).x <= size.width && <>
+              <path d={'M ' + map({ x: 0, y: 0 }).x + ' 0 V ' + size.height}/>
+              {axes.y.filter(y => y !== 0).map(y => <g key={'y' + y}><path d={'M ' + (map({ x: 0, y: y }).x - 5) + ' ' + map({ x: 0, y }).y + ' h 10'}/><text x={map({ x: 0, y }).x - 10} y={map({ x: 0, y }).y + 4} textAnchor="end">{y}</text></g>)}
+              <text x={map({ x: 0, y: 0 }).x + 10} y={18}>Y</text>
+            </>}
+            {map({ x: 0, y: 0 }).x >= 0 && map({ x: 0, y: 0 }).x <= size.width && map({ x: 0, y: 0 }).y >= 0 && map({ x: 0, y: 0 }).y <= size.height && <text x={map({ x: 0, y: 0 }).x - 9} y={map({ x: 0, y: 0 }).y + 19} textAnchor="end">0</text>}
+          </g>}
           {visibleShapes.map(shape => shape.geometry.kind === 'marker'
-            ? <g key={shape.id} transform={'translate(' + map(shape.geometry.point).x + ' ' + map(shape.geometry.point).y + ')'} className="marker"><circle r="4.5" fill="#fff" stroke="#3182dd" strokeWidth="2"/><text x="10" y="-10">{shape.geometry.label}</text></g>
+            ? <g key={shape.id} data-shape-id={shape.id} transform={'translate(' + map(shape.geometry.point).x + ' ' + map(shape.geometry.point).y + ')'} className={'marker ' + (selectedId === shape.id ? 'selected-shape' : '')}><circle r="4.5" fill="#fff" stroke="#3182dd" strokeWidth="2"/><text x="10" y="-10">{shape.geometry.label}</text></g>
             : shape.geometry.kind === 'callout'
             ? <g key={shape.id} data-shape-id={shape.id} className="callout"><defs><marker id={'arrow-' + shape.id} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#151b23"/></marker></defs><path d={'M ' + map(shape.geometry.end).x + ' ' + map(shape.geometry.end).y + ' L ' + map(shape.geometry.elbow).x + ' ' + map(shape.geometry.elbow).y + ' L ' + map(shape.geometry.target).x + ' ' + map(shape.geometry.target).y} fill="none" stroke="#151b23" strokeWidth="1.6" markerEnd={'url(#arrow-' + shape.id + ')'}/><text x={map(shape.geometry.elbow).x - 2} y={map(shape.geometry.elbow).y - 8}>{shape.geometry.label}</text></g>
             : shape.geometry.kind === 'dimension'
-            ? <g key={shape.id} data-shape-id={shape.id} className={'dimension-shape ' + (selectedId === shape.id ? 'selected-shape' : '')}>{dimensionLayout(shape.geometry).lines.map(([a, b], i) => <path key={i} d={'M ' + map(a).x + ' ' + map(a).y + ' L ' + map(b).x + ' ' + map(b).y} fill="none" stroke="#34455a" strokeWidth="1.3"/>)}{dimensionLayout(shape.geometry).arrow.map(({ tip, toward }, i) => <path key={'a' + i} d={arrowTriangle(map(tip), map(toward), 10, 3)} fill="#34455a"/>)}<text x={map(dimensionLayout(shape.geometry).label).x} y={map(dimensionLayout(shape.geometry).label).y - 5} textAnchor="middle">{dimensionLayout(shape.geometry).text}</text></g>
-            : <path key={shape.id} data-shape-id={shape.id} d={shapePath(shape, map, 'screen')} fill="none" {...screenStyle(shape)} vectorEffect="non-scaling-stroke" className={selectedId === shape.id ? 'selected-shape' : ''}/>)}
+            ? <g key={shape.id} data-shape-id={shape.id} className={'dimension-shape ' + (selectedId === shape.id ? 'selected-shape' : '')}>{dimensionLayout(shape.geometry).lines.map(([a, b], i) => <path key={i} d={'M ' + map(a).x + ' ' + map(a).y + ' L ' + map(b).x + ' ' + map(b).y} fill="none" stroke="#34455a" strokeWidth="1.3"/>)}{dimensionLayout(shape.geometry).arcs.map((arc, i) => <path key={'arc' + i} d={shapePath({ ...shape, geometry: arc }, map, 'screen')} fill="none" stroke="#34455a" strokeWidth="1.3"/>)}{dimensionLayout(shape.geometry).arrow.map(({ tip, toward }, i) => <path key={'a' + i} d={arrowTriangle(map(tip), map(toward), 10, 3)} fill="#34455a"/>)}<text x={map(dimensionLayout(shape.geometry).label).x} y={map(dimensionLayout(shape.geometry).label).y - 5} textAnchor="middle">{dimensionLayout(shape.geometry).text}</text></g>
+            : <path key={shape.id} data-shape-id={shape.id} d={shapePath(shape, map, 'screen')} fill="none" {...screenStyle(shape)} strokeLinecap={shape.geometry.kind === 'ink' ? 'round' : undefined} strokeLinejoin={shape.geometry.kind === 'ink' ? 'round' : undefined} vectorEffect="non-scaling-stroke" className={selectedId === shape.id ? 'selected-shape' : ''}/>)}
+          {editing && pointer && ((tool === 'line' && draft.length > 0) || (tool === 'extend' && extendTarget)) && (() => {
+            const anchor = map(tool === 'extend' ? extendTarget!.point : draft[0]);
+            return <g className="orthogonal-guides" pointerEvents="none"><path d={'M 0 ' + anchor.y + ' H ' + size.width}/><path d={'M ' + anchor.x + ' 0 V ' + size.height}/></g>;
+          })()}
           {preview && <path d={preview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+          {inkDraft.length > 0 && <path d={shapePath({ id: 'ink-preview', role: 'annotation', style: 'thin-solid', geometry: { kind: 'ink', points: inkDraft, color: inkColor, widthPx: inkWidth } }, map, 'screen')} fill="none" stroke={inkColor} strokeWidth={inkWidth} strokeLinecap="round" strokeLinejoin="round" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+          {extendPreview && <path d={extendPreview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
           {offsetPreview && <path d={offsetPreview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
+          {constructionPreview.map((line, index) => <path key={'construction-' + index} d={shapePath({ id: 'construction-preview', role: 'construction', style: 'thin-solid', geometry: line }, map, 'screen')} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>)}
+          {tangentContacts.map((contact, index) => <circle key={'contact-' + index} cx={map(contact).x} cy={map(contact).y} r="6" fill="#fff" stroke="#3287e2" strokeWidth="2" pointerEvents="none"/>)}
           {draft.map((p, i) => <circle key={i} cx={map(p).x} cy={map(p).y} r="4" fill="#fff" stroke="#3287e2" strokeWidth="2" pointerEvents="none"/>)}
           {tool === 'eraser' && editing && pointer && <circle cx={map(pointer).x} cy={map(pointer).y} r={erasePx} fill="#fa6b5a24" stroke="#d85146" strokeWidth="1.5" pointerEvents="none"/>}
           {pointer && snapLabel && <g pointerEvents="none"><circle cx={map(pointer).x} cy={map(pointer).y} r="7" fill="#fff" stroke="#3287e2" strokeWidth="2"/><rect x={map(pointer).x + 11} y={map(pointer).y - 26} width="52" height="21" rx="4" fill="#fff" stroke="#b9d6f2"/><text x={map(pointer).x + 19} y={map(pointer).y - 11} fontSize="13" fill="#2673c9">{snapLabel}</text></g>}

@@ -56,7 +56,7 @@ test('教师能用两条偏移辅助线手工作出精确 R20 圆弧', async ({ 
   await clickWorld(0, 35); await clickWorld(30, 30);
   await clickWorld(40, 0); await clickWorld(30, 30);
   await page.getByRole('button', { name: '粗实线' }).click();
-  await page.getByRole('button', { name: '圆弧' }).click();
+  await page.getByRole('button', { name: '圆弧', exact: true }).click();
   await clickWorld(20, 20); await clickWorld(0, 20); await clickWorld(20, 0);
   await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(5);
   await page.getByRole('button', { name: '撤销' }).click();

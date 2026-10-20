@@ -2,7 +2,7 @@ import type { DrawingCommand, Materialized, Point, Project, Shape, Step } from '
 
 export const blankProject = (name = '未命名画板'): Project => ({
   schemaVersion: 1, unit: 'mm', name, shapes: [], steps: [], cursor: 0,
-  settings: { thickStrokeMm: 0.5, showConstruction: true },
+  settings: { thickStrokeMm: 0.5, showConstruction: true, showAxes: false },
 });
 
 export function materialize(steps: Step[], cursor = steps.length): Materialized {
@@ -51,9 +51,14 @@ const isShape = (value: unknown): value is Shape => {
   if (g.kind === 'arc') return isPoint(g.center) && typeof g.radius === 'number' && Number.isFinite(g.radius) && g.radius > 0 && typeof g.startAngle === 'number' && Number.isFinite(g.startAngle) && typeof g.sweepAngle === 'number' && Number.isFinite(g.sweepAngle) && Math.abs(g.sweepAngle) > 0 && Math.abs(g.sweepAngle) <= Math.PI * 2;
   if (g.kind === 'marker') return isPoint(g.point) && typeof g.label === 'string' && g.label.length < 80;
   if (g.kind === 'callout') return isPoint(g.target) && isPoint(g.elbow) && isPoint(g.end) && typeof g.label === 'string' && g.label.length < 80;
+  if (g.kind === 'ink') return Array.isArray(g.points) && g.points.length > 0 && g.points.length <= 10000 && g.points.every(isPoint)
+    && ['#d83b32', '#287ee4', '#1c222b'].includes(String(g.color)) && [2, 4, 6].includes(Number(g.widthPx));
   if (g.kind === 'dimension') {
     if (g.mode === 'linear') return isPoint(g.a) && isPoint(g.b) && typeof g.offset === 'number' && Number.isFinite(g.offset) && Math.hypot(g.a.x - g.b.x, g.a.y - g.b.y) > 1e-8;
     if (g.mode === 'radius' || g.mode === 'diameter') return isPoint(g.center) && isPoint(g.edge) && isPoint(g.labelPoint) && typeof g.value === 'number' && Number.isFinite(g.value) && g.value > 0;
+    if (g.mode === 'angle') return isPoint(g.vertex) && typeof g.startAngle === 'number' && Number.isFinite(g.startAngle)
+      && typeof g.sweepAngle === 'number' && Number.isFinite(g.sweepAngle) && g.sweepAngle > 0 && g.sweepAngle < Math.PI
+      && typeof g.radius === 'number' && Number.isFinite(g.radius) && g.radius > 0;
   }
   return false;
 };
@@ -85,7 +90,7 @@ export function parseProject(json: string): Project {
   const name = typeof p.name === 'string' && p.name.length <= 120 ? p.name : '导入的画板';
   const steps = p.steps as Step[];
   const state = materialize(steps, p.cursor as number);
-  return { schemaVersion: 1, unit: 'mm', name, steps, cursor: p.cursor as number, shapes: state.shapes, settings: { thickStrokeMm: settings.thickStrokeMm, showConstruction: state.showConstruction } };
+  return { schemaVersion: 1, unit: 'mm', name, steps, cursor: p.cursor as number, shapes: state.shapes, settings: { thickStrokeMm: settings.thickStrokeMm, showConstruction: state.showConstruction, showAxes: settings.showAxes === true } };
 }
 
 export function demoProject(): Project {

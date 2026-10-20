@@ -9,10 +9,13 @@ export type CircleGeometry = { kind: 'circle'; center: Point; radius: number };
 export type ArcGeometry = { kind: 'arc'; center: Point; radius: number; startAngle: number; sweepAngle: number };
 export type MarkerGeometry = { kind: 'marker'; point: Point; label: string };
 export type CalloutGeometry = { kind: 'callout'; target: Point; elbow: Point; end: Point; label: string };
+export type InkColor = '#d83b32' | '#287ee4' | '#1c222b';
+export type InkGeometry = { kind: 'ink'; points: Point[]; color: InkColor; widthPx: 2 | 4 | 6 };
 export type LinearDimension = { kind: 'dimension'; mode: 'linear'; a: Point; b: Point; offset: number };
 export type RadialDimension = { kind: 'dimension'; mode: 'radius' | 'diameter'; center: Point; edge: Point; labelPoint: Point; value: number };
-export type DimensionGeometry = LinearDimension | RadialDimension;
-export type Geometry = LineGeometry | CircleGeometry | ArcGeometry | MarkerGeometry | CalloutGeometry | DimensionGeometry;
+export type AngularDimension = { kind: 'dimension'; mode: 'angle'; vertex: Point; startAngle: number; sweepAngle: number; radius: number };
+export type DimensionGeometry = LinearDimension | RadialDimension | AngularDimension;
+export type Geometry = LineGeometry | CircleGeometry | ArcGeometry | MarkerGeometry | CalloutGeometry | InkGeometry | DimensionGeometry;
 export type Shape = { id: string; role: Role; style: LineStyleId; geometry: Geometry };
 export type DrawingCommand =
   | { type: 'create'; shape: Shape }
@@ -28,6 +31,6 @@ export type Project = {
   shapes: Shape[];
   steps: Step[];
   cursor: number;
-  settings: { thickStrokeMm: number; showConstruction: boolean };
+  settings: { thickStrokeMm: number; showConstruction: boolean; showAxes: boolean };
 };
 export type Materialized = { shapes: Shape[]; showConstruction: boolean };
