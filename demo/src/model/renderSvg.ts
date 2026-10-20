@@ -6,7 +6,7 @@ export type Mapper = (point: Point) => Point;
 const fmt = (n: number) => Number(n.toFixed(4));
 const pstr = (p: Point) => `${fmt(p.x)} ${fmt(p.y)}`;
 
-function plainPath(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper): string {
+function plainPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper): string {
   if (g.kind === 'line') return `M ${pstr(map(g.a))} L ${pstr(map(g.b))}`;
   const r = Math.hypot(map(polar(g.center, g.radius, 0)).x - map(g.center).x, map(polar(g.center, g.radius, 0)).y - map(g.center).y);
   if (g.kind === 'circle') {
@@ -21,7 +21,7 @@ function plainPath(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper): strin
   return `M ${pstr(map(a))} A ${fmt(r)} ${fmt(r)} 0 ${Math.abs(g.sweepAngle) > Math.PI ? 1 : 0} ${g.sweepAngle >= 0 ? 0 : 1} ${pstr(map(b))}`;
 }
 
-function pathSamples(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper, spacing: number): Point[] {
+function pathSamples(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper, spacing: number): Point[] {
   let length = 0;
   if (g.kind === 'line') {
     const a = map(g.a); const b = map(g.b);
@@ -38,7 +38,7 @@ function pathSamples(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper, spac
   });
 }
 
-function patternedPath(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper, kind: 'wave' | 'zigzag', scale: 'screen' | 'print'): string {
+function patternedPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper, kind: 'wave' | 'zigzag', scale: 'screen' | 'print'): string {
   const amplitude = scale === 'screen' ? 2.4 : 1.1;
   const period = scale === 'screen' ? 22 : 11;
   const points = pathSamples(g, map, period / 9);
@@ -56,7 +56,7 @@ function patternedPath(g: Exclude<Geometry, { kind: 'marker' }>, map: Mapper, ki
 }
 
 export function shapePath(shape: Shape, map: Mapper, scale: 'screen' | 'print'): string {
-  if (shape.geometry.kind === 'marker') return '';
+  if (shape.geometry.kind === 'marker' || shape.geometry.kind === 'callout') return '';
   const style = getLineStyle(shape.style);
   return style.kind === 'wave' || style.kind === 'zigzag'
     ? patternedPath(shape.geometry, map, style.kind, scale)
@@ -80,24 +80,33 @@ export function shapeBounds(shapes: Shape[]): { minX: number; minY: number; maxX
     const g = s.geometry;
     if (g.kind === 'line') { collect(g.a); collect(g.b); }
     else if (g.kind === 'marker') collect(g.point);
+    else if (g.kind === 'callout') { collect(g.target); collect(g.elbow); collect(g.end); }
     else { collect({ x: g.center.x - g.radius, y: g.center.y - g.radius }); collect({ x: g.center.x + g.radius, y: g.center.y + g.radius }); }
   }
   return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
 const escapeXml = (s: string) => s.replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
-export function generateSvg(shapes: Shape[], showConstruction: boolean, thickStrokeMm = 0.5): string {
+export type Viewport = { minX: number; minY: number; maxX: number; maxY: number };
+export function generateSvg(shapes: Shape[], showConstruction: boolean, thickStrokeMm = 0.5, viewport?: Viewport): string {
   const visible = shapes.filter(s => s.role !== 'construction' || showConstruction);
-  const bounds = shapeBounds(visible);
-  const margin = 10;
+  const bounds = viewport ?? shapeBounds(visible);
+  const margin = viewport ? 0 : 10;
   const minX = bounds.minX - margin; const maxY = bounds.maxY + margin;
-  const width = Math.max(40, bounds.maxX - bounds.minX + margin * 2);
-  const height = Math.max(40, bounds.maxY - bounds.minY + margin * 2);
+  const width = Math.max(viewport ? 0.01 : 40, bounds.maxX - bounds.minX + margin * 2);
+  const height = Math.max(viewport ? 0.01 : 40, bounds.maxY - bounds.minY + margin * 2);
   const map: Mapper = p => ({ x: p.x - minX, y: maxY - p.y });
   const body = visible.map(s => {
     if (s.geometry.kind === 'marker') {
       const p = map(s.geometry.point);
       return `<circle cx="${fmt(p.x)}" cy="${fmt(p.y)}" r="1" fill="#397bd0"/><text x="${fmt(p.x + 2)}" y="${fmt(p.y - 2)}" font-size="4" fill="#1b3556">${escapeXml(s.geometry.label)}</text>`;
+    }
+    if (s.geometry.kind === 'callout') {
+      const target = map(s.geometry.target); const elbow = map(s.geometry.elbow); const end = map(s.geometry.end);
+      const dx = target.x - elbow.x; const dy = target.y - elbow.y; const angle = Math.atan2(dy, dx);
+      const wingA = { x: target.x - 3 * Math.cos(angle - 0.4), y: target.y - 3 * Math.sin(angle - 0.4) };
+      const wingB = { x: target.x - 3 * Math.cos(angle + 0.4), y: target.y - 3 * Math.sin(angle + 0.4) };
+      return `<path d="M ${pstr(end)} L ${pstr(elbow)} L ${pstr(target)}" fill="none" stroke="#151b23" stroke-width="${printStrokeMm(s.style, thickStrokeMm)}"/><path d="M ${pstr(target)} L ${pstr(wingA)} L ${pstr(wingB)} Z" fill="#151b23"/><text x="${fmt(elbow.x)}" y="${fmt(elbow.y - 1)}" font-size="5" fill="#151b23">${escapeXml(s.geometry.label)}</text>`;
     }
     const style = getLineStyle(s.style);
     const color = s.role === 'construction' ? '#458de8' : '#151b23';

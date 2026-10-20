@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { addCommand, blankProject, demoProject, materialize, moveCursor, parseProject } from '../src/model/history';
+import { generateSvg } from '../src/model/renderSvg';
 import type { Shape } from '../src/model/types';
 
 const line: Shape = { id: 'line-1', role: 'construction', style: 'thin-solid', geometry: { kind: 'line', a: { x: 0, y: 0 }, b: { x: 10, y: 0 } } };
@@ -32,6 +33,15 @@ describe('project history', () => {
     if (arc?.kind === 'arc') {
       expect(arc.center).toEqual({ x: 20, y: 20 });
       expect(arc.radius).toBe(20);
+    }
+    const callout = project.shapes.find(shape => shape.id === 'r20-label')?.geometry;
+    expect(callout?.kind).toBe('callout');
+    if (callout?.kind === 'callout') {
+      expect(Math.hypot(callout.target.x - 20, callout.target.y - 20)).toBeCloseTo(20, 8);
+      expect(generateSvg(project.shapes, true)).toContain('R20</text>');
+      const viewport = generateSvg(project.shapes, false, 0.5, { minX: 0, minY: 0, maxX: 40, maxY: 30 });
+      expect(viewport).toContain('width="40mm" height="30mm"');
+      expect(viewport).not.toContain('#458de8');
     }
   });
 });

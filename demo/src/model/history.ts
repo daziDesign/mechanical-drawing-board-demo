@@ -49,6 +49,7 @@ const isShape = (value: unknown): value is Shape => {
   if (g.kind === 'circle') return isPoint(g.center) && typeof g.radius === 'number' && Number.isFinite(g.radius) && g.radius > 0;
   if (g.kind === 'arc') return isPoint(g.center) && typeof g.radius === 'number' && Number.isFinite(g.radius) && g.radius > 0 && typeof g.startAngle === 'number' && Number.isFinite(g.startAngle) && typeof g.sweepAngle === 'number' && Number.isFinite(g.sweepAngle) && Math.abs(g.sweepAngle) > 0 && Math.abs(g.sweepAngle) <= Math.PI * 2;
   if (g.kind === 'marker') return isPoint(g.point) && typeof g.label === 'string' && g.label.length < 80;
+  if (g.kind === 'callout') return isPoint(g.target) && isPoint(g.elbow) && isPoint(g.end) && typeof g.label === 'string' && g.label.length < 80;
   return false;
 };
 const isCommand = (value: unknown): value is DrawingCommand => {
@@ -85,13 +86,14 @@ export function demoProject(): Project {
   let p = blankProject('R20 两直线圆弧连接');
   const make = (id: string, role: Shape['role'], geometry: Shape['geometry'], style: Shape['style'] = 'thin-solid'): Shape => ({ id, role, geometry, style });
   const create = (shape: Shape, label: string) => { p = addCommand(p, { type: 'create', shape }, label); };
-  create(make('boundary-v', 'geometry', { kind: 'line', a: { x: 0, y: -18 }, b: { x: 0, y: 85 } }), '绘制竖直已知直线');
-  create(make('boundary-h', 'geometry', { kind: 'line', a: { x: -18, y: 0 }, b: { x: 105, y: 0 } }), '绘制水平已知直线');
-  create(make('offset-v', 'construction', { kind: 'line', a: { x: 20, y: -8 }, b: { x: 20, y: 70 } }), '向内偏移 20 mm，作竖直辅助线');
-  create(make('offset-h', 'construction', { kind: 'line', a: { x: -8, y: 20 }, b: { x: 75, y: 20 } }), '向内偏移 20 mm，作水平辅助线');
+  create(make('boundary-v', 'geometry', { kind: 'line', a: { x: 0, y: 0 }, b: { x: 0, y: 48 } }, 'thick-solid'), '绘制竖直已知直线');
+  create(make('boundary-h', 'geometry', { kind: 'line', a: { x: 0, y: 0 }, b: { x: 48, y: 0 } }, 'thick-solid'), '绘制水平已知直线');
+  create(make('offset-v', 'construction', { kind: 'line', a: { x: 20, y: 0 }, b: { x: 20, y: 44 } }), '向内偏移 20 mm，作竖直辅助线');
+  create(make('offset-h', 'construction', { kind: 'line', a: { x: 0, y: 20 }, b: { x: 44, y: 20 } }), '向内偏移 20 mm，作水平辅助线');
   create(make('center-o', 'annotation', { kind: 'marker', point: { x: 20, y: 20 }, label: 'O' }), '两辅助线交点为圆心 O');
   create(make('tangent-1', 'annotation', { kind: 'marker', point: { x: 0, y: 20 }, label: 'T1' }), '确定切点 T1');
   create(make('tangent-2', 'annotation', { kind: 'marker', point: { x: 20, y: 0 }, label: 'T2' }), '确定切点 T2');
   create(make('r20-arc', 'geometry', { kind: 'arc', center: { x: 20, y: 20 }, radius: 20, startAngle: Math.PI, sweepAngle: Math.PI / 2 }, 'thick-solid'), '以 O 为圆心绘制 R20 圆弧');
+  create(make('r20-label', 'annotation', { kind: 'callout', target: { x: 20 + 20 * Math.cos(1.18 * Math.PI), y: 20 + 20 * Math.sin(1.18 * Math.PI) }, elbow: { x: 8, y: 29 }, end: { x: 15, y: 29 }, label: 'R20' }), '标明连接圆弧半径 R20');
   return p;
 }

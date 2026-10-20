@@ -8,7 +8,8 @@ export type LineGeometry = { kind: 'line'; a: Point; b: Point };
 export type CircleGeometry = { kind: 'circle'; center: Point; radius: number };
 export type ArcGeometry = { kind: 'arc'; center: Point; radius: number; startAngle: number; sweepAngle: number };
 export type MarkerGeometry = { kind: 'marker'; point: Point; label: string };
-export type Geometry = LineGeometry | CircleGeometry | ArcGeometry | MarkerGeometry;
+export type CalloutGeometry = { kind: 'callout'; target: Point; elbow: Point; end: Point; label: string };
+export type Geometry = LineGeometry | CircleGeometry | ArcGeometry | MarkerGeometry | CalloutGeometry;
 export type Shape = { id: string; role: Role; style: LineStyleId; geometry: Geometry };
 export type DrawingCommand =
   | { type: 'create'; shape: Shape }

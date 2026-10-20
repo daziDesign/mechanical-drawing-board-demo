@@ -89,7 +89,7 @@ function circleCircle(a: CircleGeometry, b: CircleGeometry): Point[] {
 }
 
 export function intersections(a: Geometry, b: Geometry): Point[] {
-  if (a.kind === 'marker' || b.kind === 'marker') return [];
+  if (a.kind === 'marker' || b.kind === 'marker' || a.kind === 'callout' || b.kind === 'callout') return [];
   const aCircle: CircleGeometry | null = a.kind === 'arc' ? { kind: 'circle', center: a.center, radius: a.radius } : a.kind === 'circle' ? a : null;
   const bCircle: CircleGeometry | null = b.kind === 'arc' ? { kind: 'circle', center: b.center, radius: b.radius } : b.kind === 'circle' ? b : null;
   let points: Point[] = [];
@@ -113,7 +113,7 @@ export function snapCandidates(shapes: Shape[]): SnapCandidate[] {
         if (g.kind === 'circle' || arcContains(g, p)) result.push({ point: p, label: '象限点' });
       }
       if (g.kind === 'arc') for (const p of arcEnds(g)) result.push({ point: p, label: '端点' });
-    } else result.push({ point: g.point, label: g.label });
+    } else if (g.kind === 'marker') result.push({ point: g.point, label: g.label });
   }
   for (let i = 0; i < shapes.length; i++) for (let j = i + 1; j < shapes.length; j++)
     for (const p of intersections(shapes[i].geometry, shapes[j].geometry)) result.push({ point: p, label: '交点' });
