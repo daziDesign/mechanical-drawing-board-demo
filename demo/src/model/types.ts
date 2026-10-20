@@ -18,6 +18,7 @@ export type DrawingCommand =
   | { type: 'create'; shape: Shape }
   | { type: 'delete'; id: string }
   | { type: 'style'; id: string; style: LineStyleId }
+  | { type: 'replace'; removeIds: string[]; addShapes: Shape[] }
   | { type: 'constructionVisibility'; visible: boolean };
 export type Step = { id: string; label: string; command: DrawingCommand; timestamp: number };
 export type Project = {

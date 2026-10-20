@@ -13,6 +13,7 @@ export function materialize(steps: Step[], cursor = steps.length): Materialized 
     if (c.type === 'create') shapes = [...shapes, c.shape];
     else if (c.type === 'delete') shapes = shapes.filter(shape => shape.id !== c.id);
     else if (c.type === 'style') shapes = shapes.map(shape => shape.id === c.id ? { ...shape, style: c.style } : shape);
+    else if (c.type === 'replace') shapes = [...shapes.filter(shape => !c.removeIds.includes(shape.id)), ...c.addShapes];
     else showConstruction = c.visible;
   }
   return { shapes, showConstruction };
@@ -62,6 +63,7 @@ const isCommand = (value: unknown): value is DrawingCommand => {
   if (c.type === 'create') return isShape(c.shape);
   if (c.type === 'delete') return typeof c.id === 'string';
   if (c.type === 'style') return typeof c.id === 'string' && styles.has(String(c.style));
+  if (c.type === 'replace') return Array.isArray(c.removeIds) && c.removeIds.length <= 10000 && c.removeIds.every((id: unknown) => typeof id === 'string') && Array.isArray(c.addShapes) && c.addShapes.length <= 10000 && c.addShapes.every(isShape);
   if (c.type === 'constructionVisibility') return typeof c.visible === 'boolean';
   return false;
 };

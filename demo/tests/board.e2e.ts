@@ -82,6 +82,9 @@ test('1366×768 下核心控制可见', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: /打开 R20 教学示例/ }).click();
   await expect(page.locator('.tool-rail')).toBeVisible();
+  await expect(page.getByRole('button', { name: '尺寸标注' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '橡皮擦' })).toBeVisible();
+  expect((await page.getByRole('button', { name: '橡皮擦' }).boundingBox())?.height).toBeGreaterThanOrEqual(44);
   await expect(page.locator('.playback-bar')).toBeVisible();
   await expect(page.locator('.style-strip')).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(1366);
@@ -166,6 +169,9 @@ test('触控输入能绘制直线', async ({ browser }) => {
   await page.touchscreen.tap(box.x + box.width / 2 - 60, box.y + box.height / 2);
   await page.touchscreen.tap(box.x + box.width / 2 + 60, box.y + box.height / 2);
   await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(1);
+  await page.getByRole('button', { name: '橡皮擦' }).click();
+  await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
+  await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(2);
   await context.close();
 });
 
@@ -192,6 +198,7 @@ test('可直接输入线段、圆、圆弧和平行线的精确坐标与尺寸',
   await page.getByLabel('起始角（°）').fill('180');
   await page.getByLabel('终止角（°）').fill('270');
   await page.getByRole('button', { name: '按数值绘制' }).click();
+  await page.screenshot({ path: 'qa/precision.png', fullPage: true });
 
   await page.getByRole('button', { name: '辅助平行线' }).click();
   const box = await page.locator('svg.drawing-canvas').boundingBox();
@@ -256,4 +263,54 @@ test('长度、半径和直径标注可回放并导出', async ({ page }) => {
   expect(svg).toContain('R15</text>');
   expect(svg).toContain('⌀30</text>');
   await page.screenshot({ path: 'qa/dimensions.png', fullPage: true });
+});
+
+test('橡皮擦局部裁剪线段和圆，支持拖动、撤销、回放与恢复', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建空白画板' }).click();
+  const canvas = page.locator('svg.drawing-canvas');
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('画布未显示');
+  const screen = (x: number, y: number) => ({ x: box.x + box.width / 2 + x * 6, y: box.y + box.height / 2 - y * 6 });
+  await page.getByRole('button', { name: '直线' }).click();
+  await page.getByLabel('线段长度').fill('100');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+  await page.getByRole('button', { name: '圆', exact: true }).click();
+  await page.getByLabel('圆心 Y').fill('20');
+  await page.getByLabel('半径 R').fill('20');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+  await page.getByRole('button', { name: '橡皮擦' }).click();
+  const from = screen(40, 0); const to = screen(60, 0);
+  await page.mouse.move(from.x, from.y); await page.mouse.down();
+  await page.mouse.move(to.x, to.y, { steps: 6 }); await page.mouse.up();
+  await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(3);
+  const circlePoint = screen(20, 20);
+  await page.mouse.click(circlePoint.x, circlePoint.y);
+  await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(3);
+  const arcCount = () => page.locator('svg.drawing-canvas path[data-shape-id]').evaluateAll(nodes => nodes.filter(node => (node.getAttribute('d')?.match(/ A /g)?.length ?? 0) === 1).length);
+  await expect.poll(arcCount).toBe(1);
+  await page.mouse.move(box.x + box.width - 100, box.y + box.height - 100);
+  await expect(page.getByRole('status')).toHaveCount(0);
+  await page.screenshot({ path: 'qa/eraser.png', fullPage: true });
+  await page.getByRole('button', { name: '撤销' }).click();
+  await expect(page.locator('svg.drawing-canvas path[data-shape-id]')).toHaveCount(3);
+  await expect.poll(arcCount).toBe(0);
+  await page.getByRole('button', { name: '重做' }).click();
+  await expect.poll(arcCount).toBe(1);
+  await page.getByRole('button', { name: '上一步' }).click();
+  await expect.poll(arcCount).toBe(0);
+  await page.getByRole('button', { name: '退出回放' }).click();
+  await expect(page.getByText('已保存', { exact: true })).toBeVisible();
+  await page.reload();
+  await expect.poll(arcCount).toBe(1);
+
+  await page.getByRole('button', { name: '文件菜单' }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: '保存项目 JSON' }).click();
+  const path = await (await download).path();
+  if (!path) throw new Error('JSON 下载路径缺失');
+  const project = JSON.parse(readFileSync(path, 'utf8'));
+  expect(project.shapes.filter((s: { geometry: { kind: string } }) => s.geometry.kind === 'line')).toHaveLength(2);
+  expect(project.shapes.filter((s: { geometry: { kind: string } }) => s.geometry.kind === 'arc')).toHaveLength(1);
+  expect(project.steps.at(-1).command.type).toBe('replace');
 });

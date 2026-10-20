@@ -2,18 +2,19 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent } from 'react';
 import {
   ArrowClockwise, ArrowCounterClockwise, ArrowsOut, CaretDown, CaretLeft, CaretRight,
-  Circle, Cursor, DownloadSimple, Eye, EyeSlash, FloppyDisk, FolderOpen, Hand,
+  Circle, Cursor, DownloadSimple, Eraser, Eye, EyeSlash, FloppyDisk, FolderOpen, Hand,
   Minus, Pause, Play, Plus, Ruler, SlidersHorizontal, Trash, X,
 } from '@phosphor-icons/react';
 import { addCommand, blankProject, demoProject, materialize, moveCursor, parseProject } from './model/history';
 import { angleOf, arcContains, arcThroughThreePoints, distance, nearestOnLine, nearestSnap, offsetLine, polar, positiveAngle, snapCandidates } from './model/geometry';
 import { dimensionLayout, makeDimension } from './model/dimensions';
+import { densifyStroke, eraseGeometry } from './model/erase';
 import { getLineStyle, lineStyles } from './model/lineStyles';
 import { arrowTriangle, generateSvg, screenStyle, shapeBounds, shapePath } from './model/renderSvg';
 import { downloadPng, downloadText, loadProject, saveProject } from './model/storage';
 import type { Geometry, LineStyleId, Point, Project, Shape } from './model/types';
 
-type Tool = 'select' | 'line' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'dimension' | 'hand';
+type Tool = 'select' | 'line' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'dimension' | 'eraser' | 'hand';
 type Camera = { x: number; y: number; scale: number };
 const iconTools = [
   { id: 'select', label: '选择', Icon: Cursor },
@@ -22,6 +23,7 @@ const iconTools = [
   { id: 'arc-center', label: '圆弧', Icon: ArrowClockwise },
   { id: 'offset', label: '辅助平行线', Icon: SlidersHorizontal },
   { id: 'dimension', label: '尺寸标注', Icon: Ruler },
+  { id: 'eraser', label: '橡皮擦', Icon: Eraser },
   { id: 'hand', label: '平移', Icon: Hand },
 ] as const;
 const freshId = () => crypto.randomUUID();
@@ -72,6 +74,7 @@ export function App() {
   const [offsetId, setOffsetId] = useState<string | null>(null);
   const [dimensionSourceId, setDimensionSourceId] = useState<string | null>(null);
   const [dimensionDiameter, setDimensionDiameter] = useState(false);
+  const [erasePx, setErasePx] = useState(16);
   const [numeric, setNumeric] = useState('');
   const [exactX, setExactX] = useState('0');
   const [exactY, setExactY] = useState('0');
@@ -95,6 +98,7 @@ export function App() {
   const saveQueue = useRef<Promise<void>>(Promise.resolve());
   const saveVersion = useRef(0);
   const dragRef = useRef<{ x: number; y: number; camera: Camera } | null>(null);
+  const eraseRef = useRef<Point[] | null>(null);
   const cameraTouched = useRef(false);
   const editing = playback === null;
   const state = useMemo(() => editing ? { shapes: project.shapes, showConstruction: project.settings.showConstruction } : materialize(project.steps, playback), [editing, project, playback]);
@@ -175,7 +179,7 @@ export function App() {
     return candidate?.point ?? next;
   };
   const changeTool = (next: Tool) => {
-    setTool(next); setDraft([]); setOffsetId(null); setDimensionSourceId(null); setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
+    setTool(next); setDraft([]); setOffsetId(null); setDimensionSourceId(null); eraseRef.current = null; setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
   };
   const exactValue = (value: string, label: string, positive = false): number | null => {
     const n = Number(value);
@@ -243,7 +247,7 @@ export function App() {
     }
     if (tool === 'offset') {
       if (!offsetId) {
-        const hit = hitShape(point, visibleShapes, camera.scale);
+        const hit = hitShape(point, visibleShapes.filter(s => s.geometry.kind === 'line'), camera.scale);
         if (!hit || hit.geometry.kind !== 'line') { message('先选择一条直线。'); return; }
         setOffsetId(hit.id); message('再单击直线目标一侧，确定偏移方向。'); return;
       }
@@ -301,11 +305,33 @@ export function App() {
       }
     }
   };
+  const finishErase = (stroke: Point[]) => {
+    const samples = densifyStroke(stroke, Math.max(0.2, erasePx / camera.scale / 2));
+    const radius = erasePx / camera.scale;
+    const removeIds: string[] = []; const addShapes: Shape[] = [];
+    for (const shape of visibleShapes) {
+      const geometry = shape.geometry;
+      if (geometry.kind !== 'line' && geometry.kind !== 'circle' && geometry.kind !== 'arc') continue;
+      const pieces = eraseGeometry(geometry, samples, radius);
+      if (pieces === null) continue;
+      removeIds.push(shape.id);
+      for (const piece of pieces) addShapes.push({ ...shape, id: freshId(), geometry: piece });
+    }
+    if (!removeIds.length) { message('擦除范围未触及线条。'); return; }
+    setProject(current => addCommand(current, { type: 'replace', removeIds, addShapes }, '局部擦除 ' + removeIds.length + ' 个图元'));
+    setSelectedId(null);
+  };
   const pointerDown = (event: ReactPointerEvent<SVGSVGElement>) => {
     if (event.button === 2) { changeTool('select'); return; }
     if (event.button === 1 || space || tool === 'hand') {
       cameraTouched.current = true;
       dragRef.current = { x: event.clientX, y: event.clientY, camera };
+      event.currentTarget.setPointerCapture(event.pointerId); return;
+    }
+    if (!editing) return;
+    if (tool === 'eraser') {
+      const point = unmap(event.clientX, event.clientY);
+      eraseRef.current = [point]; setPointer(point); setSnapLabel('');
       event.currentTarget.setPointerCapture(event.pointerId); return;
     }
     const point = snapped(unmap(event.clientX, event.clientY), event.shiftKey);
@@ -317,9 +343,21 @@ export function App() {
       setCamera({ ...drag.camera, x: drag.camera.x - (event.clientX - drag.x) / drag.camera.scale, y: drag.camera.y + (event.clientY - drag.y) / drag.camera.scale });
       return;
     }
+    if (tool === 'eraser') {
+      const point = unmap(event.clientX, event.clientY);
+      if (eraseRef.current) eraseRef.current.push(point);
+      setPointer(point); return;
+    }
     setPointer(snapped(unmap(event.clientX, event.clientY), event.shiftKey));
   };
   const pointerUp = (event: ReactPointerEvent<SVGSVGElement>) => {
+    if (eraseRef.current) {
+      const stroke = eraseRef.current;
+      eraseRef.current = null;
+      if (event.type !== 'pointercancel') { stroke.push(unmap(event.clientX, event.clientY)); finishErase(stroke); }
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      return;
+    }
     if (dragRef.current) {
       dragRef.current = null;
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
@@ -355,7 +393,7 @@ export function App() {
     setProject(sample ? demoProject() : blankProject());
     cameraTouched.current = !sample;
     setCamera(sample ? sampleCamera(size.width, size.height) : { x: 0, y: 0, scale: 6 });
-    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setSelectedId(null); setDimensionSourceId(null);
+    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setSelectedId(null); setDimensionSourceId(null); eraseRef.current = null;
     message(sample ? '已载入可编辑的 R20 示例。' : '已创建空白画板。');
   };
   const exportFile = async (kind: 'json' | 'svg' | 'png') => {
@@ -378,7 +416,7 @@ export function App() {
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error('项目文件不能超过 10 MB。');
       const next = parseProject(await file.text());
-      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setSelectedId(null); setDimensionSourceId(null);
+      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setSelectedId(null); setDimensionSourceId(null); eraseRef.current = null;
       cameraTouched.current = false;
       setCamera(next.name === 'R20 两直线圆弧连接' ? sampleCamera(size.width, size.height) : fitCamera(next.shapes, size.width, size.height));
       message('项目已载入。');
@@ -438,6 +476,7 @@ export function App() {
     : tool === 'arc-three' ? ['单击圆弧起点。', '单击经过点。', '单击圆弧终点。'][Math.min(draft.length, 2)]
     : tool === 'offset' ? (offsetId ? '单击目标一侧，生成平行辅助线。' : '单击要偏移的直线。')
     : tool === 'dimension' ? (dimensionSourceId ? '点击标注文字的放置位置。' : '点击要标注的线段、圆或圆弧。')
+    : tool === 'eraser' ? '在多余线条上点击或拖动，局部擦除；可撤销。'
     : tool === 'hand' ? '拖动画布，滚轮缩放。' : '选择图元后可修改线型或删除。';
 
   return <div className="app-shell">
@@ -481,13 +520,13 @@ export function App() {
           <button onClick={toggleGuides}>{state.showConstruction ? <Eye size={16}/> : <EyeSlash size={16}/>} 辅助线</button>
           <button onClick={() => setSnapOn(v => !v)}>捕捉 {snapOn ? '开' : '关'}</button>
         </div>
-        {editing && ['line', 'circle', 'arc-center', 'offset'].includes(tool) && <div className="precision-card" aria-label="精确作图">
+        {editing && ['line', 'circle', 'arc-center', 'offset'].includes(tool) && <div className="precision-card" aria-label="精确作图" onKeyDown={event => { if (event.key === 'Enter' && event.target instanceof HTMLInputElement) { event.preventDefault(); makeExact(); } }}>
           <div className="precision-title"><strong>精确作图</strong><span>单位 mm</span></div>
           {tool !== 'offset' && <div className="precision-grid">
             <label>{tool === 'line' ? '起点 X' : '圆心 X'}<input type="number" step="any" value={exactX} onChange={event => setExactX(event.target.value)}/></label>
             <label>{tool === 'line' ? '起点 Y' : '圆心 Y'}<input type="number" step="any" value={exactY} onChange={event => setExactY(event.target.value)}/></label>
           </div>}
-          <label className="precision-wide">{tool === 'line' ? '线段长度' : tool === 'offset' ? '平行距离' : '半径 R'}<input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '输入毫米值'} value={numeric} onChange={event => setNumeric(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') makeExact(); }}/></label>
+          <label className="precision-wide">{tool === 'line' ? '线段长度' : tool === 'offset' ? '平行距离' : '半径 R'}<input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '输入毫米值'} value={numeric} onChange={event => setNumeric(event.target.value)}/></label>
           {tool === 'line' && <label className="precision-wide">方向角（°，0 为向右）<input type="number" step="any" value={exactAngle} onChange={event => setExactAngle(event.target.value)}/></label>}
           {tool === 'arc-center' && <><div className="precision-grid"><label>起始角（°）<input type="number" step="any" value={exactStart} onChange={event => setExactStart(event.target.value)}/></label><label>终止角（°）<input type="number" step="any" value={exactEnd} onChange={event => setExactEnd(event.target.value)}/></label></div><div className="precision-segment"><button className={!clockwise ? 'active' : ''} onClick={() => setClockwise(false)}>逆时针</button><button className={clockwise ? 'active' : ''} onClick={() => setClockwise(true)}>顺时针</button></div></>}
           {tool === 'offset' && <><p className="precision-help">{offsetId ? '已选直线。可指定方向后直接生成。' : '先在画布中点选一条直线。'}</p><div className="precision-segment"><button className={offsetSide === 'left' ? 'active' : ''} onClick={() => setOffsetSide('left')}>左侧</button><button className={offsetSide === 'right' ? 'active' : ''} onClick={() => setOffsetSide('right')}>右侧</button></div></>}
@@ -495,6 +534,7 @@ export function App() {
           <p className="precision-help">也可在画布点选{tool === 'line' ? '起点与终点' : tool === 'offset' ? '目标一侧' : tool === 'circle' ? '圆心与半径点' : '圆心、起点与终点'}。</p>
         </div>}
         {editing && tool === 'dimension' && <div className="precision-card dimension-card" aria-label="尺寸标注设置"><div className="precision-title"><strong>尺寸标注</strong><span>单位 mm</span></div><p className="precision-help">{dimensionSourceId ? '已选图元，再点击画布放置标注。' : '先点击一条线段、圆或圆弧。'}</p><div className="precision-segment"><button className={!dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(false)}>长度 / 半径</button><button className={dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(true)}>圆标直径</button></div><p className="precision-help">标注按图元几何计算；线段显示实际长度，圆和圆弧显示半径。</p></div>}
+        {editing && tool === 'eraser' && <div className="precision-card eraser-card" aria-label="橡皮擦设置"><div className="precision-title"><strong>局部橡皮擦</strong><span>屏幕像素</span></div><label>擦除半径：{erasePx} px<input type="range" min="8" max="48" step="2" value={erasePx} onChange={event => setErasePx(Number(event.target.value))}/></label><p className="precision-help">在线段、圆或圆弧上点击，或按住拖动。只擦除笔迹覆盖的部分，松开后作为一步记录。</p></div>}
         <svg ref={svgRef} className={'drawing-canvas tool-' + tool} role="img" aria-label="机械制图画布"
           onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}
           onPointerLeave={() => { setPointer(null); setSnapLabel(''); }} onWheel={wheel} onContextMenu={event => event.preventDefault()}>
@@ -509,6 +549,7 @@ export function App() {
           {preview && <path d={preview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
           {offsetPreview && <path d={offsetPreview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
           {draft.map((p, i) => <circle key={i} cx={map(p).x} cy={map(p).y} r="4" fill="#fff" stroke="#3287e2" strokeWidth="2" pointerEvents="none"/>)}
+          {tool === 'eraser' && editing && pointer && <circle cx={map(pointer).x} cy={map(pointer).y} r={erasePx} fill="#fa6b5a24" stroke="#d85146" strokeWidth="1.5" pointerEvents="none"/>}
           {pointer && snapLabel && <g pointerEvents="none"><circle cx={map(pointer).x} cy={map(pointer).y} r="7" fill="#fff" stroke="#3287e2" strokeWidth="2"/><rect x={map(pointer).x + 11} y={map(pointer).y - 26} width="52" height="21" rx="4" fill="#fff" stroke="#b9d6f2"/><text x={map(pointer).x + 19} y={map(pointer).y - 11} fontSize="13" fill="#2673c9">{snapLabel}</text></g>}
         </svg>
         <div className="canvas-hint"><span>i</span>{editing ? hint : '步骤回放中；退出回放后可继续绘图。'}</div>
@@ -518,7 +559,7 @@ export function App() {
       {panel && <aside className="properties-panel">
         <div className="panel-header"><strong>作图参数</strong><button aria-label="折叠参数面板" onClick={() => setPanel(false)}><X size={20}/></button></div>
         <p className="panel-tool">当前工具：{tool === 'arc-three' ? '三点圆弧' : tool === 'arc-center' ? '圆心圆弧' : iconTools.find(t => t.id === tool)?.label}</p>
-        {['line', 'circle', 'arc-center', 'offset'].includes(tool) && <label className="field-label">{tool === 'line' ? '精确长度 L' : tool === 'offset' ? '偏移距离 D' : '精确半径 R'} <span>mm</span><input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '可选，留空用鼠标'} value={numeric} onChange={event => setNumeric(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && pointer && draft.length) { event.preventDefault(); applyPoint(pointer); } }}/></label>}
+        {['line', 'circle', 'arc-center', 'offset'].includes(tool) && <label className="field-label">{tool === 'line' ? '精确长度 L' : tool === 'offset' ? '偏移距离 D' : '精确半径 R'} <span>mm</span><input type="number" min="0.001" step="any" placeholder={tool === 'offset' ? '20' : '可选，留空用鼠标'} value={numeric} onChange={event => setNumeric(event.target.value)} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); makeExact(); } }}/></label>}
         {tool === 'arc-center' && <div className="field-label">圆弧方向<div className="segmented"><button className={!clockwise ? 'active' : ''} onClick={() => setClockwise(false)}>逆时针</button><button className={clockwise ? 'active' : ''} onClick={() => setClockwise(true)}>顺时针</button></div></div>}
         {tool === 'arc-center' && <button className="quiet-button" onClick={() => changeTool('arc-three')}>切换三点圆弧</button>}
         {tool === 'arc-three' && <button className="quiet-button" onClick={() => changeTool('arc-center')}>切换圆心圆弧</button>}
