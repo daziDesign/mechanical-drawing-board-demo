@@ -50,6 +50,10 @@ const isShape = (value: unknown): value is Shape => {
   if (g.kind === 'arc') return isPoint(g.center) && typeof g.radius === 'number' && Number.isFinite(g.radius) && g.radius > 0 && typeof g.startAngle === 'number' && Number.isFinite(g.startAngle) && typeof g.sweepAngle === 'number' && Number.isFinite(g.sweepAngle) && Math.abs(g.sweepAngle) > 0 && Math.abs(g.sweepAngle) <= Math.PI * 2;
   if (g.kind === 'marker') return isPoint(g.point) && typeof g.label === 'string' && g.label.length < 80;
   if (g.kind === 'callout') return isPoint(g.target) && isPoint(g.elbow) && isPoint(g.end) && typeof g.label === 'string' && g.label.length < 80;
+  if (g.kind === 'dimension') {
+    if (g.mode === 'linear') return isPoint(g.a) && isPoint(g.b) && typeof g.offset === 'number' && Number.isFinite(g.offset) && Math.hypot(g.a.x - g.b.x, g.a.y - g.b.y) > 1e-8;
+    if (g.mode === 'radius' || g.mode === 'diameter') return isPoint(g.center) && isPoint(g.edge) && isPoint(g.labelPoint) && typeof g.value === 'number' && Number.isFinite(g.value) && g.value > 0;
+  }
   return false;
 };
 const isCommand = (value: unknown): value is DrawingCommand => {

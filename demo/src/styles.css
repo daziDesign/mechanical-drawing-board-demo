@@ -46,6 +46,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #87b8ee; outline-
 .drawing-canvas .marker { pointer-events: none; }
 .drawing-canvas .marker text { font-size: 16px; font-weight: 600; fill: #223143; }
 .drawing-canvas .callout text { font-size: 23px; font-weight: 600; font-style: italic; fill: #151b23; }
+.drawing-canvas .dimension-shape text { font-size: 17px; font-weight: 600; fill: #26394d; stroke: #fff; stroke-width: 5px; paint-order: stroke; }
 .style-strip { position: absolute; z-index: 5; top: 16px; left: 40px; max-width: min(1040px, calc(100% - 220px)); padding: 17px 15px 18px; border: 1px solid #dce4ed; border-radius: 10px; background: #ffffffed; box-shadow: 0 4px 18px #172f4910; backdrop-filter: blur(8px); }
 .style-head { height: 30px; display: flex; align-items: baseline; justify-content: space-between; padding: 0 5px; }
 .style-head strong { font-size: 16px; }
@@ -72,6 +73,7 @@ button:focus-visible, input:focus-visible { outline: 3px solid #87b8ee; outline-
 .precision-submit { width: 100%; height: 39px; border: 0; border-radius: 6px; background: #287ee4; color: #fff; font-weight: 700; }
 .precision-submit:hover { background: #176ac9; }
 .precision-help { margin: 9px 0 0; line-height: 1.5; }
+.dimension-card .precision-segment { margin-top: 14px; }
 .canvas-hint { position: absolute; bottom: 17px; left: 24px; z-index: 3; color: #8795a4; font-size: 12px; pointer-events: none; display: flex; align-items: center; gap: 8px; }
 .canvas-hint span { width: 17px; height: 17px; display: grid; place-items: center; border: 1px solid #aebdca; border-radius: 50%; font-size: 11px; font-weight: 600; }
 .coordinate { position: absolute; bottom: 18px; right: 25px; z-index: 3; color: #9ba6b2; font-size: 11px; font-variant-numeric: tabular-nums; pointer-events: none; }

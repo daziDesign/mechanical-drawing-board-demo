@@ -3,16 +3,17 @@ import type { PointerEvent as ReactPointerEvent, WheelEvent as ReactWheelEvent }
 import {
   ArrowClockwise, ArrowCounterClockwise, ArrowsOut, CaretDown, CaretLeft, CaretRight,
   Circle, Cursor, DownloadSimple, Eye, EyeSlash, FloppyDisk, FolderOpen, Hand,
-  Minus, Pause, Play, Plus, SlidersHorizontal, Trash, X,
+  Minus, Pause, Play, Plus, Ruler, SlidersHorizontal, Trash, X,
 } from '@phosphor-icons/react';
 import { addCommand, blankProject, demoProject, materialize, moveCursor, parseProject } from './model/history';
 import { angleOf, arcContains, arcThroughThreePoints, distance, nearestOnLine, nearestSnap, offsetLine, polar, positiveAngle, snapCandidates } from './model/geometry';
+import { dimensionLayout, makeDimension } from './model/dimensions';
 import { getLineStyle, lineStyles } from './model/lineStyles';
-import { generateSvg, screenStyle, shapeBounds, shapePath } from './model/renderSvg';
+import { arrowTriangle, generateSvg, screenStyle, shapeBounds, shapePath } from './model/renderSvg';
 import { downloadPng, downloadText, loadProject, saveProject } from './model/storage';
 import type { Geometry, LineStyleId, Point, Project, Shape } from './model/types';
 
-type Tool = 'select' | 'line' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'hand';
+type Tool = 'select' | 'line' | 'circle' | 'arc-center' | 'arc-three' | 'offset' | 'dimension' | 'hand';
 type Camera = { x: number; y: number; scale: number };
 const iconTools = [
   { id: 'select', label: '选择', Icon: Cursor },
@@ -20,6 +21,7 @@ const iconTools = [
   { id: 'circle', label: '圆', Icon: Circle },
   { id: 'arc-center', label: '圆弧', Icon: ArrowClockwise },
   { id: 'offset', label: '辅助平行线', Icon: SlidersHorizontal },
+  { id: 'dimension', label: '尺寸标注', Icon: Ruler },
   { id: 'hand', label: '平移', Icon: Hand },
 ] as const;
 const freshId = () => crypto.randomUUID();
@@ -49,6 +51,7 @@ function hitShape(point: Point, shapes: Shape[], scale: number): Shape | null {
     else if (g.kind === 'arc' && arcContains(g, point)) px = Math.abs(distance(point, g.center) - g.radius) * scale;
     else if (g.kind === 'marker') px = distance(point, g.point) * scale;
     else if (g.kind === 'callout') px = distance(point, g.elbow) * scale;
+    else if (g.kind === 'dimension') px = distance(point, dimensionLayout(g).label) * scale;
     if (px < bestPx) { best = shape; bestPx = px; }
   }
   return best;
@@ -67,6 +70,8 @@ export function App() {
   const [snapLabel, setSnapLabel] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [offsetId, setOffsetId] = useState<string | null>(null);
+  const [dimensionSourceId, setDimensionSourceId] = useState<string | null>(null);
+  const [dimensionDiameter, setDimensionDiameter] = useState(false);
   const [numeric, setNumeric] = useState('');
   const [exactX, setExactX] = useState('0');
   const [exactY, setExactY] = useState('0');
@@ -170,7 +175,7 @@ export function App() {
     return candidate?.point ?? next;
   };
   const changeTool = (next: Tool) => {
-    setTool(next); setDraft([]); setOffsetId(null); setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
+    setTool(next); setDraft([]); setOffsetId(null); setDimensionSourceId(null); setNumeric(next === 'offset' ? '20' : ''); setSnapLabel('');
   };
   const exactValue = (value: string, label: string, positive = false): number | null => {
     const n = Number(value);
@@ -223,6 +228,19 @@ export function App() {
     if (!editing) return;
     if (tool === 'select') { setSelectedId(hitShape(point, visibleShapes, camera.scale)?.id ?? null); return; }
     if (tool === 'hand') return;
+    if (tool === 'dimension') {
+      if (!dimensionSourceId) {
+        const hit = hitShape(point, visibleShapes.filter(s => ['line', 'circle', 'arc'].includes(s.geometry.kind)), camera.scale);
+        if (!hit) { message('先点选要标注的线段、圆或圆弧。'); return; }
+        setDimensionSourceId(hit.id); message('再点标注文字的放置位置。'); return;
+      }
+      const source = visibleShapes.find(s => s.id === dimensionSourceId);
+      if (!source || !['line', 'circle', 'arc'].includes(source.geometry.kind)) { setDimensionSourceId(null); return; }
+      const geometry = source.geometry as Extract<Geometry, { kind: 'line' | 'circle' | 'arc' }>;
+      const annotation = makeDimension(geometry, point, dimensionDiameter);
+      if (annotation) commit(annotation, '添加尺寸标注', 'annotation', 'thin-solid');
+      setDimensionSourceId(null); return;
+    }
     if (tool === 'offset') {
       if (!offsetId) {
         const hit = hitShape(point, visibleShapes, camera.scale);
@@ -337,7 +355,7 @@ export function App() {
     setProject(sample ? demoProject() : blankProject());
     cameraTouched.current = !sample;
     setCamera(sample ? sampleCamera(size.width, size.height) : { x: 0, y: 0, scale: 6 });
-    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setSelectedId(null);
+    setReady(true); setWelcome(false); setPlayback(null); setPlaying(false); setDraft([]); setSelectedId(null); setDimensionSourceId(null);
     message(sample ? '已载入可编辑的 R20 示例。' : '已创建空白画板。');
   };
   const exportFile = async (kind: 'json' | 'svg' | 'png') => {
@@ -360,7 +378,7 @@ export function App() {
     try {
       if (file.size > 10 * 1024 * 1024) throw new Error('项目文件不能超过 10 MB。');
       const next = parseProject(await file.text());
-      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setSelectedId(null);
+      setProject(next); setReady(true); setWelcome(false); setFileMenu(false); setPlayback(null); setDraft([]); setSelectedId(null); setDimensionSourceId(null);
       cameraTouched.current = false;
       setCamera(next.name === 'R20 两直线圆弧连接' ? sampleCamera(size.width, size.height) : fitCamera(next.shapes, size.width, size.height));
       message('项目已载入。');
@@ -371,7 +389,7 @@ export function App() {
       const typing = event.target instanceof HTMLElement && ['INPUT', 'TEXTAREA'].includes(event.target.tagName);
       if (event.code === 'Space' && !typing) { event.preventDefault(); setSpace(true); }
       if (event.key === 'Escape') {
-        setDraft([]); setOffsetId(null); setFileMenu(false);
+        setDraft([]); setOffsetId(null); setDimensionSourceId(null); setFileMenu(false);
         if (playback !== null) { setPlayback(null); setPlaying(false); }
         else changeTool('select');
       }
@@ -419,6 +437,7 @@ export function App() {
     : tool === 'arc-center' ? ['单击圆心。', '单击起点，可输入半径。', '单击终点完成圆弧。'][Math.min(draft.length, 2)]
     : tool === 'arc-three' ? ['单击圆弧起点。', '单击经过点。', '单击圆弧终点。'][Math.min(draft.length, 2)]
     : tool === 'offset' ? (offsetId ? '单击目标一侧，生成平行辅助线。' : '单击要偏移的直线。')
+    : tool === 'dimension' ? (dimensionSourceId ? '点击标注文字的放置位置。' : '点击要标注的线段、圆或圆弧。')
     : tool === 'hand' ? '拖动画布，滚轮缩放。' : '选择图元后可修改线型或删除。';
 
   return <div className="app-shell">
@@ -475,6 +494,7 @@ export function App() {
           <button className="precision-submit" onClick={makeExact}>{tool === 'offset' ? '生成平行线' : '按数值绘制'}</button>
           <p className="precision-help">也可在画布点选{tool === 'line' ? '起点与终点' : tool === 'offset' ? '目标一侧' : tool === 'circle' ? '圆心与半径点' : '圆心、起点与终点'}。</p>
         </div>}
+        {editing && tool === 'dimension' && <div className="precision-card dimension-card" aria-label="尺寸标注设置"><div className="precision-title"><strong>尺寸标注</strong><span>单位 mm</span></div><p className="precision-help">{dimensionSourceId ? '已选图元，再点击画布放置标注。' : '先点击一条线段、圆或圆弧。'}</p><div className="precision-segment"><button className={!dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(false)}>长度 / 半径</button><button className={dimensionDiameter ? 'active' : ''} onClick={() => setDimensionDiameter(true)}>圆标直径</button></div><p className="precision-help">标注按图元几何计算；线段显示实际长度，圆和圆弧显示半径。</p></div>}
         <svg ref={svgRef} className={'drawing-canvas tool-' + tool} role="img" aria-label="机械制图画布"
           onPointerDown={pointerDown} onPointerMove={pointerMove} onPointerUp={pointerUp} onPointerCancel={pointerUp}
           onPointerLeave={() => { setPointer(null); setSnapLabel(''); }} onWheel={wheel} onContextMenu={event => event.preventDefault()}>
@@ -483,6 +503,8 @@ export function App() {
             ? <g key={shape.id} transform={'translate(' + map(shape.geometry.point).x + ' ' + map(shape.geometry.point).y + ')'} className="marker"><circle r="4.5" fill="#fff" stroke="#3182dd" strokeWidth="2"/><text x="10" y="-10">{shape.geometry.label}</text></g>
             : shape.geometry.kind === 'callout'
             ? <g key={shape.id} data-shape-id={shape.id} className="callout"><defs><marker id={'arrow-' + shape.id} viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse"><path d="M 0 0 L 10 5 L 0 10 z" fill="#151b23"/></marker></defs><path d={'M ' + map(shape.geometry.end).x + ' ' + map(shape.geometry.end).y + ' L ' + map(shape.geometry.elbow).x + ' ' + map(shape.geometry.elbow).y + ' L ' + map(shape.geometry.target).x + ' ' + map(shape.geometry.target).y} fill="none" stroke="#151b23" strokeWidth="1.6" markerEnd={'url(#arrow-' + shape.id + ')'}/><text x={map(shape.geometry.elbow).x - 2} y={map(shape.geometry.elbow).y - 8}>{shape.geometry.label}</text></g>
+            : shape.geometry.kind === 'dimension'
+            ? <g key={shape.id} data-shape-id={shape.id} className={'dimension-shape ' + (selectedId === shape.id ? 'selected-shape' : '')}>{dimensionLayout(shape.geometry).lines.map(([a, b], i) => <path key={i} d={'M ' + map(a).x + ' ' + map(a).y + ' L ' + map(b).x + ' ' + map(b).y} fill="none" stroke="#34455a" strokeWidth="1.3"/>)}{dimensionLayout(shape.geometry).arrow.map(({ tip, toward }, i) => <path key={'a' + i} d={arrowTriangle(map(tip), map(toward), 10, 3)} fill="#34455a"/>)}<text x={map(dimensionLayout(shape.geometry).label).x} y={map(dimensionLayout(shape.geometry).label).y - 5} textAnchor="middle">{dimensionLayout(shape.geometry).text}</text></g>
             : <path key={shape.id} data-shape-id={shape.id} d={shapePath(shape, map, 'screen')} fill="none" {...screenStyle(shape)} vectorEffect="non-scaling-stroke" className={selectedId === shape.id ? 'selected-shape' : ''}/>)}
           {preview && <path d={preview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}
           {offsetPreview && <path d={offsetPreview} fill="none" stroke="#3287e2" strokeWidth="1.8" strokeDasharray="6 4" vectorEffect="non-scaling-stroke" pointerEvents="none"/>}

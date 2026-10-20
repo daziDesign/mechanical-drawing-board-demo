@@ -4,6 +4,7 @@
 
 - 选定概念图：[方案 1](qa/reference-option-1.png)
 - 实际 Chrome 画面：[1920×1080](qa/implementation-1920.png)、[1366×768](qa/implementation-1366.png)
+- 尺寸标注画面：[长度、半径和直径](qa/dimensions.png)
 - 对照拼图：[comparison.png](qa/comparison.png)
 
 ## 结果

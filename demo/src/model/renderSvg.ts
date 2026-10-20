@@ -1,4 +1,5 @@
 import { arcEnds, polar } from './geometry';
+import { dimensionLayout } from './dimensions';
 import { getLineStyle, printStrokeMm, screenStrokePx } from './lineStyles';
 import type { Geometry, Point, Shape } from './types';
 
@@ -6,7 +7,7 @@ export type Mapper = (point: Point) => Point;
 const fmt = (n: number) => Number(n.toFixed(4));
 const pstr = (p: Point) => `${fmt(p.x)} ${fmt(p.y)}`;
 
-function plainPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper): string {
+function plainPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' | 'dimension' }>, map: Mapper): string {
   if (g.kind === 'line') return `M ${pstr(map(g.a))} L ${pstr(map(g.b))}`;
   const r = Math.hypot(map(polar(g.center, g.radius, 0)).x - map(g.center).x, map(polar(g.center, g.radius, 0)).y - map(g.center).y);
   if (g.kind === 'circle') {
@@ -21,7 +22,7 @@ function plainPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Ma
   return `M ${pstr(map(a))} A ${fmt(r)} ${fmt(r)} 0 ${Math.abs(g.sweepAngle) > Math.PI ? 1 : 0} ${g.sweepAngle >= 0 ? 0 : 1} ${pstr(map(b))}`;
 }
 
-function pathSamples(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper, spacing: number): Point[] {
+function pathSamples(g: Exclude<Geometry, { kind: 'marker' | 'callout' | 'dimension' }>, map: Mapper, spacing: number): Point[] {
   let length = 0;
   if (g.kind === 'line') {
     const a = map(g.a); const b = map(g.b);
@@ -38,7 +39,7 @@ function pathSamples(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: 
   });
 }
 
-function patternedPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map: Mapper, kind: 'wave' | 'zigzag', scale: 'screen' | 'print'): string {
+function patternedPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' | 'dimension' }>, map: Mapper, kind: 'wave' | 'zigzag', scale: 'screen' | 'print'): string {
   const amplitude = scale === 'screen' ? 2.4 : 1.1;
   const period = scale === 'screen' ? 22 : 11;
   const points = pathSamples(g, map, period / 9);
@@ -56,7 +57,7 @@ function patternedPath(g: Exclude<Geometry, { kind: 'marker' | 'callout' }>, map
 }
 
 export function shapePath(shape: Shape, map: Mapper, scale: 'screen' | 'print'): string {
-  if (shape.geometry.kind === 'marker' || shape.geometry.kind === 'callout') return '';
+  if (shape.geometry.kind === 'marker' || shape.geometry.kind === 'callout' || shape.geometry.kind === 'dimension') return '';
   const style = getLineStyle(shape.style);
   return style.kind === 'wave' || style.kind === 'zigzag'
     ? patternedPath(shape.geometry, map, style.kind, scale)
@@ -81,12 +82,19 @@ export function shapeBounds(shapes: Shape[]): { minX: number; minY: number; maxX
     if (g.kind === 'line') { collect(g.a); collect(g.b); }
     else if (g.kind === 'marker') collect(g.point);
     else if (g.kind === 'callout') { collect(g.target); collect(g.elbow); collect(g.end); }
+    else if (g.kind === 'dimension') { const layout = dimensionLayout(g); layout.lines.forEach(([a, b]) => { collect(a); collect(b); }); collect(layout.label); }
     else { collect({ x: g.center.x - g.radius, y: g.center.y - g.radius }); collect({ x: g.center.x + g.radius, y: g.center.y + g.radius }); }
   }
   return { minX: Math.min(...xs), minY: Math.min(...ys), maxX: Math.max(...xs), maxY: Math.max(...ys) };
 }
 
 const escapeXml = (s: string) => s.replace(/[<>&"']/g, c => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' })[c]!);
+export function arrowTriangle(tip: Point, toward: Point, length: number, halfWidth: number): string {
+  const dx = toward.x - tip.x; const dy = toward.y - tip.y; const d = Math.hypot(dx, dy) || 1;
+  const bx = tip.x + dx / d * length; const by = tip.y + dy / d * length;
+  const nx = -dy / d * halfWidth; const ny = dx / d * halfWidth;
+  return `M ${pstr(tip)} L ${pstr({ x: bx + nx, y: by + ny })} L ${pstr({ x: bx - nx, y: by - ny })} Z`;
+}
 export type Viewport = { minX: number; minY: number; maxX: number; maxY: number };
 export function generateSvg(shapes: Shape[], showConstruction: boolean, thickStrokeMm = 0.5, viewport?: Viewport): string {
   const visible = shapes.filter(s => s.role !== 'construction' || showConstruction);
@@ -107,6 +115,13 @@ export function generateSvg(shapes: Shape[], showConstruction: boolean, thickStr
       const wingA = { x: target.x - 3 * Math.cos(angle - 0.4), y: target.y - 3 * Math.sin(angle - 0.4) };
       const wingB = { x: target.x - 3 * Math.cos(angle + 0.4), y: target.y - 3 * Math.sin(angle + 0.4) };
       return `<path d="M ${pstr(end)} L ${pstr(elbow)} L ${pstr(target)}" fill="none" stroke="#151b23" stroke-width="${printStrokeMm(s.style, thickStrokeMm)}"/><path d="M ${pstr(target)} L ${pstr(wingA)} L ${pstr(wingB)} Z" fill="#151b23"/><text x="${fmt(elbow.x)}" y="${fmt(elbow.y - 1)}" font-size="5" fill="#151b23">${escapeXml(s.geometry.label)}</text>`;
+    }
+    if (s.geometry.kind === 'dimension') {
+      const layout = dimensionLayout(s.geometry);
+      const lines = layout.lines.map(([a, b]) => `<path d="M ${pstr(map(a))} L ${pstr(map(b))}" fill="none" stroke="#34455a" stroke-width="0.25"/>`).join('');
+      const arrows = layout.arrow.map(({ tip, toward }) => `<path d="${arrowTriangle(map(tip), map(toward), 3, 0.9)}" fill="#34455a"/>`).join('');
+      const label = map(layout.label);
+      return `${lines}${arrows}<text x="${fmt(label.x)}" y="${fmt(label.y - 1)}" font-size="4" text-anchor="middle" fill="#26394d" stroke="white" stroke-width="1" paint-order="stroke">${escapeXml(layout.text)}</text>`;
     }
     const style = getLineStyle(s.style);
     const color = s.role === 'construction' ? '#458de8' : '#151b23';

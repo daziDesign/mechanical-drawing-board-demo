@@ -89,7 +89,7 @@ function circleCircle(a: CircleGeometry, b: CircleGeometry): Point[] {
 }
 
 export function intersections(a: Geometry, b: Geometry): Point[] {
-  if (a.kind === 'marker' || b.kind === 'marker' || a.kind === 'callout' || b.kind === 'callout') return [];
+  if (a.kind === 'marker' || b.kind === 'marker' || a.kind === 'callout' || b.kind === 'callout' || a.kind === 'dimension' || b.kind === 'dimension') return [];
   const aCircle: CircleGeometry | null = a.kind === 'arc' ? { kind: 'circle', center: a.center, radius: a.radius } : a.kind === 'circle' ? a : null;
   const bCircle: CircleGeometry | null = b.kind === 'arc' ? { kind: 'circle', center: b.center, radius: b.radius } : b.kind === 'circle' ? b : null;
   let points: Point[] = [];

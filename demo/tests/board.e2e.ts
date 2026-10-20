@@ -219,3 +219,41 @@ test('可直接输入线段、圆、圆弧和平行线的精确坐标与尺寸',
   expect(arc.radius).toBe(20);
   expect(parallel.a.y).toBeCloseTo(17.5, 8);
 });
+
+test('长度、半径和直径标注可回放并导出', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: '新建空白画板' }).click();
+  const canvas = page.locator('svg.drawing-canvas');
+  const box = await canvas.boundingBox();
+  if (!box) throw new Error('画布未显示');
+  const clickWorld = async (x: number, y: number) => canvas.click({ position: { x: box.width / 2 + x * 6, y: box.height / 2 - y * 6 } });
+  await page.getByRole('button', { name: '直线' }).click();
+  await page.getByLabel('线段长度').fill('80');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+  await page.getByRole('button', { name: '圆', exact: true }).click();
+  await page.getByLabel('圆心 X').fill('20');
+  await page.getByLabel('圆心 Y').fill('30');
+  await page.getByLabel('半径 R').fill('15');
+  await page.getByRole('button', { name: '按数值绘制' }).click();
+  await page.getByRole('button', { name: '尺寸标注' }).click();
+  await clickWorld(40, 0); await clickWorld(40, 12);
+  await clickWorld(35, 30); await clickWorld(45, 40);
+  await page.getByRole('button', { name: '圆标直径' }).click();
+  await clickWorld(20, 45); await clickWorld(55, 35);
+  await expect(page.locator('.dimension-shape')).toHaveCount(3);
+  await expect(page.locator('.dimension-shape')).toContainText(['80 mm', 'R15', '⌀30']);
+  await page.getByRole('button', { name: '上一步' }).click();
+  await expect(page.locator('.dimension-shape')).toHaveCount(2);
+  await page.getByRole('button', { name: '退出回放' }).click();
+
+  await page.getByRole('button', { name: '文件菜单' }).click();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: '导出 SVG' }).click();
+  const path = await (await download).path();
+  if (!path) throw new Error('SVG 下载路径缺失');
+  const svg = readFileSync(path, 'utf8');
+  expect(svg).toContain('80 mm</text>');
+  expect(svg).toContain('R15</text>');
+  expect(svg).toContain('⌀30</text>');
+  await page.screenshot({ path: 'qa/dimensions.png', fullPage: true });
+});
