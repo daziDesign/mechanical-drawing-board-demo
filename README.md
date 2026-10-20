@@ -2,6 +2,8 @@
 
 面向高校机械制图课堂的中文网页画板。此 Demo 以《机械制图教学画板_PRD与技术实现_V1》第十一节的 MVP 为基础，加入精确输入、尺寸标注与局部橡皮擦，建议在 1920×1080 或 1366×768 的电脑浏览器中投屏使用。
 
+在线体验：[GitHub Pages](https://dazidesign.github.io/mechanical-drawing-board-demo/)。推送到 `main` 后，GitHub Actions 自动完成测试、构建与部署。发布的是 `demo/dist/client` 中的静态文件；图样仍保存在当前浏览器本地。
+
 ## 启动
 
 需要 Node.js 和 npm。在仓库根目录执行：
@@ -35,6 +37,7 @@ npm test
 npm run test:e2e
 npm run build
 npm run test:sites
+npm run test:pages
 ```
 
 浏览器测试使用本机 Chrome。截图及视觉核对记录见 [design-qa.md](demo/design-qa.md)。仓库约定检查可在根目录执行 `pwsh -File tests/agents-content.Tests.ps1`。

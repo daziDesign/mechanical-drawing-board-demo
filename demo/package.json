@@ -8,8 +8,9 @@
     "build": "vite build && node scripts/prepare-sites-build.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --exclude tests/sites-worker.test.mjs",
+    "test": "vitest run --exclude tests/sites-worker.test.mjs --exclude tests/pages-build.test.mjs",
     "test:e2e": "playwright test",
+    "test:pages": "node --test tests/pages-build.test.mjs",
     "test:sites": "node --test tests/sites-worker.test.mjs"
   },
   "dependencies": {
